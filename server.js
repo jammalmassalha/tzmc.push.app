@@ -6636,6 +6636,48 @@ const UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS = Math.max(
     Number(process.env.UNKNOWN_USER_FALLBACK_MAX_ENDPOINTS || 4) || 4
 );
 
+const getGroupNameById = (groupId) => {
+    if (!groupId) return '';
+    const rawId = String(groupId).trim();
+    const normalizedId = normalizeUserKey(rawId);
+    if (!normalizedId) return '';
+
+    // 1. Check runtime groups object
+    if (groups && typeof groups === 'object') {
+        if (groups[normalizedId] && (groups[normalizedId].name || groups[normalizedId].title || groups[normalizedId].groupName)) {
+            return groups[normalizedId].name || groups[normalizedId].title || groups[normalizedId].groupName;
+        }
+        if (groups[rawId] && (groups[rawId].name || groups[rawId].title || groups[rawId].groupName)) {
+            return groups[rawId].name || groups[rawId].title || groups[rawId].groupName;
+        }
+        for (const g of Object.values(groups)) {
+            if (g && (normalizeUserKey(g.id || g.groupId) === normalizedId || g.id === rawId || g.groupId === rawId)) {
+                const name = g.name || g.title || g.groupName;
+                if (name) return name;
+            }
+        }
+    }
+
+    // 2. Check hardcodedCommunityGroupsByKey
+    if (typeof hardcodedCommunityGroupsByKey !== 'undefined' && hardcodedCommunityGroupsByKey.has(normalizedId)) {
+        const conf = hardcodedCommunityGroupsByKey.get(normalizedId);
+        if (conf && (conf.title || conf.name || conf.groupName)) {
+            return conf.title || conf.name || conf.groupName;
+        }
+    }
+
+    // 3. Check SEED_COMMUNITY_GROUPS
+    if (Array.isArray(SEED_COMMUNITY_GROUPS)) {
+        for (const seed of SEED_COMMUNITY_GROUPS) {
+            if (normalizeUserKey(seed.groupId) === normalizedId || seed.groupId === rawId) {
+                return seed.groupName || seed.groupId;
+            }
+        }
+    }
+
+    return '';
+};
+
 const notificationService = new NotificationService(
     {
         maxPushPayloadBytes: MAX_PUSH_PAYLOAD_BYTES,
@@ -6676,6 +6718,7 @@ const notificationService = new NotificationService(
         scheduleStateSave,
         logNotificationStatus,
         buildMobileSubscriptionAuthJsonForLog,
+        getGroupNameById,
         AUTH_REFRESH_PUSH_TYPE
     }
 );
@@ -6696,7 +6739,8 @@ const flutterPushService = createFlutterPushService({
     notificationService,
     fcmSender,
     normalizeUserKey,
-    unreadCounts
+    unreadCounts,
+    getGroupNameById
 });
 flutterPushService.loadFromDisk().catch((err) =>
     console.warn('[FLUTTER-FCM] Initial load failed:', err && err.message ? err.message : err)
