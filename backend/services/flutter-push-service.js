@@ -287,7 +287,38 @@ function createFlutterPushService(options = {}) {
             ? String(options.sender)
             : (typeof msg.sender === 'string' && msg.sender) || 'System';
 
-        let title = (typeof msg.title === 'string' && msg.title) || 'Work Alert';
+        const isGroup = customData.isGroup === true ||
+            customData.isGroup === 'true' ||
+            Boolean(customData.groupId);
+        const groupId = String(customData.groupId || '').trim();
+
+        // Resolve group name or sender name
+        let resolvedGroupName = String(customData.groupName || '').trim();
+        if ((!resolvedGroupName || resolvedGroupName.toLowerCase().startsWith('group:')) && groupId) {
+            if (typeof deps.getGroupNameById === 'function') {
+                const lookedUp = deps.getGroupNameById(groupId);
+                if (lookedUp) resolvedGroupName = String(lookedUp).trim();
+            }
+        }
+
+        const isRawGroupId = (val) => {
+            const s = String(val || '').trim().toLowerCase();
+            return s.startsWith('group:') || s.startsWith('community:') || (groupId && s === groupId.toLowerCase());
+        };
+
+        let title = (typeof msg.title === 'string' && msg.title) || '';
+        if (isGroup) {
+            if (!title || title === 'Work Alert' || isRawGroupId(title)) {
+                title = resolvedGroupName || customData.groupSenderName || sender || 'Group message';
+            }
+        } else {
+            if (!title || title === 'Work Alert' || isRawGroupId(title)) {
+                title = sender || 'Work Alert';
+            }
+        }
+        if (!title || isRawGroupId(title)) {
+            title = isGroup ? (resolvedGroupName || 'Group message') : 'Work Alert';
+        }
 
         // Build compactCustomData first so its messageText can serve as a fallback
         // for the notification body when shortText/longText are absent.
@@ -298,10 +329,17 @@ function createFlutterPushService(options = {}) {
 
         let body = (typeof msgBody.shortText === 'string' && msgBody.shortText)
             || (typeof msgBody.longText === 'string' && msgBody.longText)
+            || (typeof compactCustomData.groupMessageText === 'string' && compactCustomData.groupMessageText)
             || (typeof compactCustomData.messageText === 'string' && compactCustomData.messageText)
-            || 'New Notification';
+            || (imageUrl ? 'Sent an image' : (compactCustomData.fileUrl ? 'Sent a file' : ''));
+        if (!body || body.toLowerCase() === 'new notification') {
+            body = isGroup ? 'New message' : 'New notification';
+        }
+        if (isGroup && customData.groupSenderName && body && !body.startsWith(customData.groupSenderName + ':')) {
+            body = `${customData.groupSenderName}: ${body}`;
+        }
         if (messageType === 'reaction') {
-            const reactionGroupName = String(customData.groupName || msg.title || sender || '').trim();
+            const reactionGroupName = String(resolvedGroupName || customData.groupName || msg.title || sender || '').trim();
             title = reactionGroupName || 'Group';
             body = 'new reaction';
         }
@@ -349,8 +387,11 @@ function createFlutterPushService(options = {}) {
         const normalizedType = String(compactCustomData.type || '').trim().toLowerCase().replace(/[-_]+/g, ' ');
         const silentStatusPush = normalizedTitle === 'worker alert'
             || normalizedTitle === 'work alert'
-            || new Set(['read receipt', 'read', 'sent', 'receive', 'received', 'delivery receipt', 'delivered'])
-                .has(normalizedType);
+            || new Set([
+                'read receipt', 'read', 'sent', 'send', 'message send', 'message sent',
+                'receive', 'received', 'message receive', 'message received', 'message read',
+                'delivery receipt', 'delivered', 'typing', 'typing indicator'
+            ]).has(normalizedType);
         const includeNotification = !skipNotification && !silentStatusPush;
 
         return notificationService.buildPushPayloadString(payloadData, { includeNotification });

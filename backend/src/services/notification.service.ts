@@ -90,6 +90,9 @@ export interface NotificationServiceDeps {
   /** Build mobile auth JSON string for logs */
   buildMobileSubscriptionAuthJsonForLog: (target: string, subs: PushSubscription[]) => string;
 
+  /** Optional group name lookup by id */
+  getGroupNameById?: (groupId: string) => string | null | undefined;
+
   /** Auth-refresh push type constant */
   AUTH_REFRESH_PUSH_TYPE: string;
 }
@@ -152,17 +155,50 @@ export class NotificationService {
   }
 
   resolvePushNotificationContent(payloadData: Record<string, unknown> = {}): { title: string; body: string } {
-    const title = this.firstMeaningfulPushText([
+    const isGroup = payloadData.isGroup === true ||
+      payloadData.isGroup === 'true' ||
+      Boolean(payloadData.groupId);
+    const groupId = String(payloadData.groupId || '').trim();
+
+    let resolvedGroupName = String(payloadData.groupName || '').trim();
+    if ((!resolvedGroupName || resolvedGroupName.toLowerCase().startsWith('group:')) && groupId) {
+      if (typeof this.deps.getGroupNameById === 'function') {
+        const lookedUp = this.deps.getGroupNameById(groupId);
+        if (lookedUp) resolvedGroupName = String(lookedUp).trim();
+      }
+    }
+
+    const isRawGroupId = (val: unknown): boolean => {
+      const s = String(val || '').trim().toLowerCase();
+      return s.startsWith('group:') || s.startsWith('community:') || (groupId !== '' && s === groupId.toLowerCase());
+    };
+
+    let titleCandidate = this.firstMeaningfulPushText([
       payloadData.title,
-      payloadData.groupName,
+      resolvedGroupName,
       payloadData.groupSenderName,
       payloadData.sender,
       payloadData.chatName,
-      payloadData.chatId,
       payloadData.user
-    ]) || 'Work Alert';
+    ]);
 
-    const body = this.firstMeaningfulPushText([
+    let title = titleCandidate;
+    if (isGroup) {
+      if (!title || isRawGroupId(title) || this.isGenericNotificationText(title)) {
+        title = resolvedGroupName || String(payloadData.groupSenderName || payloadData.sender || 'Group message').trim();
+      }
+    } else {
+      if (!title || isRawGroupId(title) || this.isGenericNotificationText(title)) {
+        title = String(payloadData.sender || payloadData.user || 'Work Alert').trim();
+      }
+    }
+    if (!title || isRawGroupId(title)) {
+      title = isGroup ? (resolvedGroupName || 'Group message') : 'Work Alert';
+    }
+
+    const groupSenderName = String(payloadData.groupSenderName || '').trim();
+
+    let bodyCandidate = this.firstMeaningfulPushText([
       payloadData.body,
       payloadData.shortText,
       payloadData.longText,
@@ -174,7 +210,9 @@ export class NotificationService {
       payloadData.placeName,
       payloadData.caption,
       payloadData.text
-    ]) || (() => {
+    ]);
+
+    let body = bodyCandidate || (() => {
       const hasImage = Boolean(payloadData.image || payloadData.imageUrl);
       if (hasImage) return 'Sent an image';
       const hasLocation =
@@ -188,8 +226,16 @@ export class NotificationService {
         payloadData.lat != null ||
         payloadData.lng != null;
       if (hasLocation) return 'Location shared';
-      return 'New Notification';
+      return isGroup ? 'New message' : 'New notification';
     })();
+
+    if (body.toLowerCase() === 'new notification' && isGroup) {
+      body = 'New message';
+    }
+
+    if (isGroup && groupSenderName && body && !body.startsWith(`${groupSenderName}:`)) {
+      body = `${groupSenderName}: ${body}`;
+    }
 
     return { title, body };
   }
@@ -420,7 +466,22 @@ export class NotificationService {
     // pullMessages() later returns to the sender as if it were a new incoming
     // message in a conversation with themselves.
     const skipNotificationFlag = customData.skipNotification === true || customData.skipNotification === 'true';
-    const shouldPersistPushLog = messageType !== 'read-receipt' && !skipNotificationFlag;
+    const isSilentStatusEvent = options.silent === true ||
+      messageType === 'read-receipt' ||
+      messageType === 'read_receipt' ||
+      messageType === 'read' ||
+      messageType === 'delivery-receipt' ||
+      messageType === 'delivery_receipt' ||
+      messageType === 'delivered' ||
+      messageType === 'message_send' ||
+      messageType === 'message_sent' ||
+      messageType === 'message_receive' ||
+      messageType === 'message_received' ||
+      messageType === 'message_read' ||
+      messageType === 'typing' ||
+      messageType === 'typing_indicator' ||
+      messageType === 'typing-indicator';
+    const shouldPersistPushLog = !isSilentStatusEvent && !skipNotificationFlag;
     const messageId = options.messageId || (message.messageId as string) || this.deps.generateMessageId();
     const shouldDedupLog = Boolean(options.dedupLog);
     const shouldIncrementBadge = !options.skipBadge;

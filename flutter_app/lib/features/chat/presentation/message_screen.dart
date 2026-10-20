@@ -416,11 +416,71 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
       loading: () => const <ChatMessage>[],
       error: (_, __) => const <ChatMessage>[],
     );
-    // Keep the already-restored cache visible while the Drift watcher opens.
-    // This avoids an empty conversation during the stream's initial loading
-    // window or when the platform database is temporarily unavailable.
-    final allMessages =
-        streamedMessages.isNotEmpty ? streamedMessages : cachedMessages;
+    // Rather than selecting either streamedMessages or cachedMessages, merge
+    // both lists and deduplicate them (by messageId / clientMsgId / id),
+    // falling back to in-memory messages so existing chat history remains visible
+    // alongside streamed messages.
+    // Also filter out internal background receipt and status events.
+    bool isSilentReceiptOrStatusEvent(ChatMessage m) {
+      final type = (m.recordType ?? '').trim().toLowerCase();
+      if (type.isNotEmpty) {
+        const silentTypes = {
+          'message_send',
+          'message_sent',
+          'message_receive',
+          'message_received',
+          'message_read',
+          'read',
+          'read-receipt',
+          'read_receipt',
+          'delivered',
+          'delivery-receipt',
+          'delivery_receipt',
+          'typing',
+          'typing_indicator',
+          'typing-indicator',
+          'delete-action',
+          'edit-action',
+          'group-update',
+        };
+        if (silentTypes.contains(type)) return true;
+      }
+      return false;
+    }
+
+    final combinedMessages = <ChatMessage>[];
+    final seenKeys = <String>{};
+    final seenClientMsgIds = <String>{};
+
+    void addMessage(ChatMessage m) {
+      if (isSilentReceiptOrStatusEvent(m)) return;
+
+      final msgId = m.messageId.trim();
+      final clientMsgId = m.clientMsgId?.trim() ?? '';
+      final id = m.id.trim();
+
+      if (msgId.isNotEmpty && seenKeys.contains(msgId)) return;
+      if (clientMsgId.isNotEmpty && seenClientMsgIds.contains(clientMsgId)) return;
+      if (id.isNotEmpty && seenKeys.contains(id)) return;
+
+      if (msgId.isNotEmpty) seenKeys.add(msgId);
+      if (id.isNotEmpty) seenKeys.add(id);
+      if (clientMsgId.isNotEmpty) seenClientMsgIds.add(clientMsgId);
+
+      combinedMessages.add(m);
+    }
+
+    // Add streamed (persisted Drift SQLite) messages first
+    for (final m in streamedMessages) {
+      addMessage(m);
+    }
+    // Fall back to in-memory cached messages so history remains visible
+    for (final m in cachedMessages) {
+      addMessage(m);
+    }
+
+    combinedMessages.sort(compareMessagesBySentTimeDesc);
+    final allMessages = combinedMessages;
     final chatInfo = _getChatInfo(state, normalizedChatId);
 
     // Filter messages when search is active
