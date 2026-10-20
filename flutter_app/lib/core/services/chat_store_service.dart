@@ -34,19 +34,6 @@ const int gapAnalysisCooldownMs = 30000;
 /// Max messages to keep per chat
 const int maxMessagesPerChat = 500;
 
-/// Page size for the paginated full-sync logs pull — mirrors Angular's
-/// `pageSize = 500` inside `recoverMissedMessagesFromLogs`.
-const int _kFullSyncPageSize = 500;
-
-/// Maximum messages fetched during a full sync — mirrors Angular's
-/// `LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT = 200000`.
-const int _kFullSyncMaxMessages = 200000;
-
-/// Maximum number of characters before the colon that are considered a
-/// group-sender prefix in the "SenderName: body" pattern stored by the server.
-/// Mirrors the 80-character cap in Angular's `normalizeLogsMessagesForImport`.
-const int _kGroupSenderPrefixMaxLength = 80;
-
 /// Message types that must be treated as actions instead of regular bubbles
 /// when importing server history during sync.
 const Set<String> _kImportedActionTypes = {
@@ -707,10 +694,22 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     _localCacheRestoreInFlight = true;
     try {
       final deletedChats = await _readDeletedChats(_currentUser!);
-      final persisted = await _db.getPersistedState();
-      if (persisted.messages.isEmpty &&
-          persisted.contacts.isEmpty &&
-          persisted.groups.isEmpty) {
+      PersistedChatState? persisted;
+      try {
+        persisted = await _db.getPersistedState();
+      } catch (error) {
+        debugPrint('[ChatStore] Drift getPersistedState failed: $error');
+      }
+      if (persisted == null ||
+          (persisted.messages.isEmpty &&
+              persisted.contacts.isEmpty &&
+              persisted.groups.isEmpty)) {
+        persisted = await WebChatStorage.getPersistedState(_currentUser!);
+      }
+      if (persisted == null ||
+          (persisted.messages.isEmpty &&
+              persisted.contacts.isEmpty &&
+              persisted.groups.isEmpty)) {
         return;
       }
       state = state.copyWith(
@@ -810,44 +809,39 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     
     debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
     try {
-      // The combined sync endpoint is an optimization, not the source of
-      // truth. It can be slow while the backend wakes up (or fail when its
-      // mailbox store is unavailable), so never let it prevent the durable
-      // logs fallback from populating a fresh chat list.
       try {
         final hydration = await _api.syncChatsAndMessages(
           user: _currentUser!,
           lastSyncTimestamp: _syncCursorMs,
         );
-        final hydrationMessages = (hydration['mode'] == 'full'
-                ? hydration['messages']
-                : hydration['newMessages']) as List? ?? const [];
-        final hydrationChats = (hydration['mode'] == 'full'
-                ? hydration['chats']
-                : hydration['updatedChats']) as List? ?? const [];
+        final hydrationMessages = hydration.messages;
+        final hydrationChats = hydration.chats;
         debugPrint(
-          '[SYNC-PIPELINE] Received mode=${hydration['mode']} '
+          '[SYNC-PIPELINE] Received mode=${hydration.mode} '
           'chats=${hydrationChats.length} messages=${hydrationMessages.length}',
         );
-        await _db.syncOneToOne(
-          chats: hydrationChats,
-          messages: hydrationMessages,
-          currentUserId: _currentUser,
-        );
+        try {
+          await _db.syncOneToOne(
+            chats: hydrationChats,
+            messages: hydrationMessages,
+            currentUserId: _currentUser,
+          );
+        } catch (dbError) {
+          debugPrint('[SYNC-PIPELINE] DB syncOneToOne failed: $dbError');
+        }
         // syncOneToOne persists the server response, but the chat list is
         // rendered from Riverpod state. Apply the same response in memory too;
         // otherwise a fresh install sees an empty list until a later poll even
         // though the database already contains the user's chats.
         await _applyHydrationMessages(hydrationMessages);
-        final nextCursor = int.tryParse('${hydration['next_sync_timestamp'] ?? 0}') ?? 0;
+        final nextCursor = hydration.nextSyncTimestamp;
         if (nextCursor > _syncCursorMs) {
           _syncCursorMs = nextCursor;
           await _writeSyncCursor(_currentUser!);
         }
       } catch (error, stackTrace) {
         debugPrint(
-          '[SYNC-PIPELINE] Combined sync failed; falling back to message logs: '
-          '$error\n$stackTrace',
+          '[SYNC-PIPELINE] Chat sync failed: $error\n$stackTrace',
         );
       }
       // 2. Pull fresh contacts and groups
@@ -866,11 +860,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       await _loadCommunityGroupConfigs();
       _syncCommunityGroups();
 
-      // Start the durable history recovery only after the main sync has had a
-      // chance to hydrate state. This keeps the logs import from racing the
-      // initial sync and re-applying the same messages as duplicates.
-      final fallbackRecovery = recoverMissedMessages(force: true);
-
       // 3. Pull missed messages (gap analysis).
       //
       // Use force:true to bypass the 30-second cooldown.  The realtime
@@ -878,11 +867,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // this point, which advances _lastGapAnalysisTime.  Without force the
       // cooldown would silently skip the initial pull and leave the chat list
       // empty until the next poll tick (≥15 s).
-      //
-      // This accurately re-counts unread messages by calling
-      // _handleIncomingTextMessage for every new incoming message, starting
-      // from the empty unreadByChat set above.
-      await fallbackRecovery;
+      await recoverMissedMessages(force: true);
 
       // 4. Consume the pending sync floor; message and unread data come from
       // the server response rather than local notification storage.
@@ -891,7 +876,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // firebaseMessagingBackgroundHandler saves each chat's pending unread
       // count to SharedPreferences.  Read that tray now and use it to fill
       // in any chats that the recovery pull may have missed (e.g. server
-      // lag, network error, message not yet persisted when the logs endpoint
+      // lag, network error, message not yet persisted when the sync endpoint
       // was queried).  We take the MAX so we never downgrade a count that
       // the pull already computed correctly.
       // The pending floor has now been consumed by the recovery pull above;
@@ -1353,10 +1338,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> loadChatHistory(String chatId) async {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
-    // Use incremental sync to fetch only new messages since the last sync cursor
-    // instead of always requesting the full history (since: 0).
+    // Use incremental sync to fetch only new messages since the last sync cursor.
     final since = await _resolveSyncCursor();
-    await _pullAllMessagesFromLogs(user: user, since: since);
+    await pullMessages(since: since);
   }
 
   /// PHASE 8: Load cached messages from SQLite for instant UI display.
@@ -1526,34 +1510,49 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         latestTimestamp = await _resolveSyncCursor();
       }
 
-      // Never use the incremental pull path as a full-history download.
-      // When latestTimestamp == 0 the DB is empty (fresh install / cleared
-      // state) and the server would return ALL historical messages.  Each of
-      // those messages would be routed through _handleIncomingTextMessage and
-      // marked as unread because state.messagesByChat is also empty.  A full
-      // history load must always go through _pullAllMessagesFromLogs (the
-      // batch-import path) which never increments unread counts.
-      // recoverMissedMessages already handles the since==0 case correctly, so
-      // we simply bail out here and let initialization finish first.
       if (latestTimestamp <= 0) return;
 
-      final messages = await _api.getMessagesFromLogs(
+      final syncResult = await _api.syncChatsAndMessages(
         user: user,
-        since: latestTimestamp,
+        lastSyncTimestamp: latestTimestamp,
       );
 
-      if (messages.isEmpty) return;
+      final newMessages = syncResult.messages;
+      final updatedChats = syncResult.chats;
 
-      // Route each message through the same handler used by realtime transport
-      // so that action payloads (read-receipt, delete-action, etc.) are handled
-      // correctly and regular messages are applied to the chat store.
-      for (final message in messages) {
-        _handleServerMessage(_normalizeLogMessageForImport(message));
+      if (updatedChats.isNotEmpty || newMessages.isNotEmpty) {
+        try {
+          await _db.syncOneToOne(
+            chats: updatedChats,
+            messages: newMessages,
+            currentUserId: user,
+          );
+        } catch (dbError) {
+          debugPrint('[PULL] DB syncOneToOne failed: $dbError');
+        }
+
+        final normalizedMessages = newMessages
+            .whereType<Map>()
+            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+            .toList();
+
+        // Route each message through the same handler used by realtime transport
+        // so that action payloads (read-receipt, delete-action, etc.) are handled
+        // correctly and regular messages are applied to the chat store.
+        for (final message in normalizedMessages) {
+          _handleServerMessage(_normalizeLogMessageForImport(message));
+        }
+
+        if (syncResult.nextSyncTimestamp > _syncCursorMs) {
+          _syncCursorMs = syncResult.nextSyncTimestamp;
+          await _writeSyncCursor(user);
+        }
+
+        _schedulePersistence();
       }
-
-      _schedulePersistence();
     } catch (e) {
       // Log error, continue with cached data
+      debugPrint('[PULL] pullMessages failed: $e');
     } finally {
       _isPullingMessages = false;
     }
@@ -1592,7 +1591,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // The branch decision is based on whether this device has any local
       // history at all; a device with an empty message table must always take
       // the batch-import path so a full history load never inflates the unread
-      // badges.  The incremental branch uses the resolved cursor (which also
+      // badges. The incremental branch uses the resolved cursor (which also
       // accounts for the persisted high-water mark and the FCM background
       // tray) rather than the raw table maximum.
       bool localDbHasMessages = true;
@@ -1611,22 +1610,48 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // newer than the cursor are returned. Rebuild the visible chat list from
       // the authoritative server history whenever memory has no messages.
       final hasInMemoryMessages = state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+      final user = _currentUser;
+      if (user == null || user.isEmpty) return;
+
       if (!localDbHasMessages || !hasInMemoryMessages) {
         // No visible in-memory history (first install, DB cleared, or a
-        // server-authoritative startup): use the batch-import path so that all
-        // historical messages are loaded without incrementing unread counts.
-        final user = _currentUser;
-        if (user != null && user.isNotEmpty) {
-          await _pullAllMessagesFromLogs(user: user, since: 0);
+        // server-authoritative startup): use /messages/sync with last_sync_timestamp: 0
+        final syncResult = await _api.syncChatsAndMessages(
+          user: user,
+          lastSyncTimestamp: 0,
+        );
+        final chats = syncResult.chats;
+        final messages = syncResult.messages;
+
+        if (chats.isNotEmpty || messages.isNotEmpty) {
+          try {
+            await _db.syncOneToOne(
+              chats: chats,
+              messages: messages,
+              currentUserId: user,
+            );
+          } catch (e) {
+            debugPrint('[GAP-RECOVERY] DB sync failed: $e');
+          }
+
+          final normalized = messages
+              .whereType<Map>()
+              .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+              .toList();
+
+          if (normalized.isNotEmpty) {
+            await _applyImportedMessages(normalized);
+          }
         }
+
+        if (syncResult.nextSyncTimestamp > _syncCursorMs) {
+          _syncCursorMs = syncResult.nextSyncTimestamp;
+          await _writeSyncCursor(user);
+        }
+
         // Explicitly clear any unread counts that may have been accumulated
         // from realtime messages (socket/SSE) that arrived concurrently during
-        // the batch import.  The batch import itself never increments unreads,
-        // but a socket/SSE delivery that fires between two paginated API calls
-        // goes through _handleIncomingTextMessage which DOES increment unreads.
-        // Clearing here is safe because all those messages are already present
-        // in state from the batch import, so the user is not "missing" any
-        // unread indicator — they will see the new messages in the chat list.
+        // the batch import.
         state = state.copyWith(unreadByChat: const {});
       } else {
         // Incremental update: use the normal per-message handler so that new
@@ -1634,7 +1659,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         await pullMessages(since: await _resolveSyncCursor());
       }
     } catch (e) {
-      // Silent failure, will retry on next poll
+      debugPrint('[GAP-RECOVERY] Failed to recover missed messages: $e');
     }
   }
 
@@ -1722,13 +1747,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'מרענן נתונים...',
       );
 
-      // 5. Sync all chats (1-to-1 conversations) from the server.
+      // 5. Sync all chats (1-to-1 conversations) and messages from the server.
       //    This ensures that all chat conversations are populated, even those
       //    without recent messages. The syncChatsAndMessages endpoint returns
-      //    the complete list of active chats when in 'full' mode.
+      //    the complete list of active chats and full message history when lastSyncTimestamp is 0.
       state = state.copyWith(
         syncProgressPercent: 50,
-        syncProgressLabel: 'סנכרון כל השיחות...',
+        syncProgressLabel: 'סנכרון כל השיחות וההודעות...',
       );
       List<dynamic> syncedChats = const [];
       List<IncomingServerMessage> normalizedSyncedMessages = const [];
@@ -1737,21 +1762,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           user: user,
           lastSyncTimestamp: 0, // Full sync from the beginning
         );
-        syncedChats = (chatSync['mode'] == 'full'
-            ? chatSync['chats']
-            : chatSync['updatedChats']) as List? ?? const [];
-        final syncedMessages = (chatSync['mode'] == 'full'
-            ? chatSync['messages']
-            : chatSync['newMessages']) as List? ?? const [];
+        syncedChats = chatSync.chats;
+        final syncedMessages = chatSync.messages;
         normalizedSyncedMessages = syncedMessages
             .whereType<Map>()
             .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
             .toList();
+
+        if (chatSync.nextSyncTimestamp > _syncCursorMs) {
+          _syncCursorMs = chatSync.nextSyncTimestamp;
+          await _writeSyncCursor(user);
+        }
+
         debugPrint(
           '[FULL-SYNC] Synced ${syncedChats.length} chats and ${syncedMessages.length} messages',
         );
       } catch (error) {
-        debugPrint('[FULL-SYNC] Chat sync failed: $error (continuing with logs pull)');
+        debugPrint('[FULL-SYNC] Chat sync failed: $error');
       }
 
       final polledMessages = <IncomingServerMessage>[];
@@ -1759,28 +1786,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         final polled = await _api.pollMessages();
         polledMessages.addAll(polled);
       } catch (_) {
-        // Polling failures are non-fatal; the logs pull below covers any gaps.
-      }
-
-      List<IncomingServerMessage> logMessages = const [];
-      try {
-        logMessages = await _fetchAllMessagesFromLogs(user: user, since: 0);
-      } catch (error) {
-        debugPrint('[FULL-SYNC] Logs pull failed: $error (continuing with chat sync)');
+        // Polling failures are non-fatal; syncChatsAndMessages covers history.
       }
 
       if (syncedChats.isNotEmpty) {
-        await _db.syncOneToOne(
-          chats: syncedChats,
-          messages: const [],
-          currentUserId: user,
-        );
+        try {
+          await _db.syncOneToOne(
+            chats: syncedChats,
+            messages: const [],
+            currentUserId: user,
+          );
+        } catch (e) {
+          debugPrint('[FULL-SYNC] DB syncOneToOne failed: $e');
+        }
       }
 
       final importedMessages = <IncomingServerMessage>[
         ...normalizedSyncedMessages,
         ...polledMessages,
-        ...logMessages,
       ];
       if (importedMessages.isNotEmpty) {
         await _applyImportedMessages(importedMessages);
@@ -1824,83 +1847,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         unreadByChat: const {},
       );
     }
-  }
-
-  /// Paginated logs pull used during full sync — mirrors Angular's
-  /// `recoverMissedMessagesFromLogs` with `limit: LOGS_RECOVERY_FULL_SYNC_FETCH_LIMIT`.
-  ///
-  /// Pages through the `/messages/logs` endpoint in batches of
-  /// [_kFullSyncPageSize] (500) until there are no more results or
-  /// [_kFullSyncMaxMessages] (200 000) have been fetched.
-  ///
-  /// All pages are collected first, then:
-  ///   1. System/sentinel messages are filtered out.
-  ///   2. Group messages are normalised (sender-prefix stripped from body).
-  ///   3. Missing groups are synthesised from the message metadata.
-  ///   4. Action messages (delete, edit, reaction, …) are applied one-by-one
-  ///      through the normal handler.
-  ///   5. Regular text messages are applied in a single batch without
-  ///      incrementing unread counters.
-  ///
-  /// This avoids O(n) state rebuilds for large histories (up to 200 000 msgs).
-  Future<void> _pullAllMessagesFromLogs({
-    required String user,
-    int since = 0,
-  }) async {
-    final allRaw = await _fetchAllMessagesFromLogs(user: user, since: since);
-
-    debugPrint(
-      '[LOGS SYNC] Backend returned '
-      '${allRaw.map((message) => message.groupId ?? message.sender).whereType<String>().toSet().length} chats '
-      'and ${allRaw.length} total messages',
-    );
-
-    if (allRaw.isEmpty) {
-      debugPrint('[LOGS SYNC] ⚠️ No messages returned from backend');
-      return;
-    }
-
-    await _applyImportedMessages(allRaw);
-    debugPrint('[LOGS SYNC] Full sync logs pull completed successfully');
-  }
-
-  Future<List<IncomingServerMessage>> _fetchAllMessagesFromLogs({
-    required String user,
-    int since = 0,
-  }) async {
-    // ── 1. Fetch all pages ──────────────────────────────────────────────────
-    int offset = 0;
-    int totalFetched = 0;
-    final allRaw = <IncomingServerMessage>[];
-
-    while (totalFetched < _kFullSyncMaxMessages) {
-      final remaining = _kFullSyncMaxMessages - totalFetched;
-      if (remaining <= 0) break;
-      final limit = remaining.clamp(1, _kFullSyncPageSize);
-
-      List<IncomingServerMessage> page;
-      try {
-        page = await _api.getMessagesFromLogs(
-          user: user,
-          limit: limit,
-          offset: offset,
-          since: since,
-        );
-      } catch (err) {
-        debugPrint('[LOGS SYNC] Network error during pagination at offset=$offset: $err');
-        break; // Network error — stop paging; keep what we already have.
-      }
-
-      if (page.isEmpty) break;
-
-      allRaw.addAll(page);
-      offset += page.length;
-      totalFetched += page.length;
-
-      // Server returned fewer items than the page size → end of results.
-      if (page.length < limit) break;
-    }
-    return allRaw;
   }
 
   ({List<ChatMessage> textMessages, List<IncomingServerMessage> actionMessages})
@@ -4189,12 +4135,60 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   void _handleConnectionChange(bool connected) {
     if (connected) {
       // Do not trigger a gap-analysis pull while a full sync is in progress —
-      // the sync itself performs a comprehensive server pull.  Calling
+      // the sync itself performs a comprehensive server pull. Calling
       // recoverMissedMessages here would race with the sync's cleared state
       // and could mark historical messages as unread.
       if (state.isSyncing) return;
-      unawaited(_syncKnownChats());
+      unawaited(_syncOnReconnect());
     }
+  }
+
+  Future<void> _syncOnReconnect() async {
+    final user = _currentUser;
+    if (user == null || user.isEmpty) return;
+
+    try {
+      final cursor = await _resolveSyncCursor();
+      final syncResult = await _api.syncChatsAndMessages(
+        user: user,
+        lastSyncTimestamp: cursor,
+      );
+
+      final newMessages = syncResult.messages;
+      final updatedChats = syncResult.chats;
+
+      if (updatedChats.isNotEmpty || newMessages.isNotEmpty) {
+        try {
+          await _db.syncOneToOne(
+            chats: updatedChats,
+            messages: newMessages,
+            currentUserId: user,
+          );
+        } catch (dbError) {
+          debugPrint('[RECONNECT-SYNC] DB syncOneToOne failed: $dbError');
+        }
+
+        final normalized = newMessages
+            .whereType<Map>()
+            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
+            .toList();
+
+        for (final message in normalized) {
+          _handleServerMessage(_normalizeLogMessageForImport(message));
+        }
+
+        if (syncResult.nextSyncTimestamp > _syncCursorMs) {
+          _syncCursorMs = syncResult.nextSyncTimestamp;
+          await _writeSyncCursor(user);
+        }
+
+        _schedulePersistence();
+      }
+    } catch (e) {
+      debugPrint('[RECONNECT-SYNC] Reconnection sync failed: $e');
+    }
+
+    await _syncKnownChats();
   }
 
   Future<void> _syncKnownChats() async {

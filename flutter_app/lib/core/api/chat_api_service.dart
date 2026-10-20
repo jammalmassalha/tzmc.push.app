@@ -741,7 +741,7 @@ class ChatApiService {
         .toList();
   }
 
-  Future<Map<String, dynamic>> syncChatsAndMessages({
+  Future<MessagesSyncResponse> syncChatsAndMessages({
     required String user,
     required int lastSyncTimestamp,
   }) async {
@@ -764,7 +764,7 @@ class ChatApiService {
     if (!response.isSuccessful || response.data == null) {
       throw ApiException('Chat hydration sync failed with ${response.statusCode}');
     }
-    return response.data!;
+    return MessagesSyncResponse.fromJson(response.data!);
   }
 
   Future<void> acknowledgeDelivery(String messageId) async {
@@ -776,43 +776,6 @@ class ChatApiService {
     if (!response.isSuccessful) {
       throw ApiException('Delivery ACK failed with ${response.statusCode}');
     }
-  }
-
-  /// Get messages from logs (for gap analysis / history sync)
-  Future<List<IncomingServerMessage>> getMessagesFromLogs({
-    required String user,
-    int limit = 1000,
-    int offset = 0,
-    int since = 0,
-  }) async {
-    final normalizedUser = user.trim().toLowerCase();
-    if (normalizedUser.isEmpty) return [];
-
-    final safeLimit = limit.clamp(1, 200000);
-    final safeOffset = offset.clamp(0, 1000000);
-
-    final response = await _client.post<String>(
-      ApiEndpoints.messagesLogs,
-      data: {
-        'user': normalizedUser,
-        'excludeSystem': '1',
-        'limit': safeLimit.toString(),
-        'offset': safeOffset.toString(),
-        'since': since.toString(),
-        '_ts': DateTime.now().millisecondsSinceEpoch.toString(),
-      },
-      options: Options(responseType: ResponseType.plain),
-      retryOptions: const RetryOptions(retries: 1, timeout: NetworkTimeouts.logsTimeout),
-    );
-
-    if (!response.isSuccessful) {
-      throw ApiException('Logs request failed: ${response.statusCode}');
-    }
-
-    final decoded = response.data == null ? null : await _decodeJsonInIsolate(response.data!);
-    final body = _coerceJsonMap(decoded);
-    final messages = (body['messages'] as List?) ?? [];
-    return messages.map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>)).toList();
   }
 
   /// Report message received
@@ -2177,14 +2140,6 @@ class ChatApiService {
   // ---------------------------------------------------------------------------
   // Convenience Methods for ChatStoreService
   // ---------------------------------------------------------------------------
-
-  /// Get messages since a timestamp (wrapper for getMessagesFromLogs)
-  Future<List<ChatMessage>> getMessagesSince(int timestamp) async {
-    // Get current user from session - for now, return empty list
-    // This needs the user context to work properly
-    // The ChatStoreService should call getMessagesFromLogs directly with user
-    return [];
-  }
 
   /// Send direct message with named parameters (wrapper for sendDirectMessage)
   ///

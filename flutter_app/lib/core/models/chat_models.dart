@@ -1043,3 +1043,111 @@ class PersistedChatState extends Equatable {
 extension StringNullIfEmpty on String {
   String? get nullIfEmpty => isEmpty ? null : this;
 }
+
+// ---------------------------------------------------------------------------
+// Messages Sync Response
+// ---------------------------------------------------------------------------
+
+/// Structured response model for the `/messages/sync` endpoint.
+///
+/// Handles both full sync (cold start / initialization) and delta sync
+/// (reconnection catch-ups / polling).
+class MessagesSyncResponse extends Equatable {
+  final bool success;
+  final String mode; // 'full' or 'delta'
+  final List<dynamic> messages;
+  final List<dynamic> chats;
+  final int lastSeq;
+  final int highestPts;
+  final int nextSyncTimestamp;
+  final Map<String, dynamic> raw;
+
+  const MessagesSyncResponse({
+    this.success = true,
+    this.mode = 'full',
+    this.messages = const [],
+    this.chats = const [],
+    this.lastSeq = 0,
+    this.highestPts = 0,
+    this.nextSyncTimestamp = 0,
+    this.raw = const {},
+  });
+
+  /// Backward-compatible map accessor allowing `response['messages']`,
+  /// `response['chats']`, `response['mode']`, `response['updatedChats']`, etc.
+  dynamic operator [](String key) {
+    switch (key) {
+      case 'success':
+        return success;
+      case 'mode':
+        return mode;
+      case 'messages':
+      case 'newMessages':
+        return messages;
+      case 'chats':
+      case 'updatedChats':
+        return chats;
+      case 'last_seq':
+      case 'lastSeq':
+        return lastSeq;
+      case 'highest_pts':
+      case 'highestPts':
+        return highestPts;
+      case 'next_sync_timestamp':
+      case 'nextSyncTimestamp':
+        return nextSyncTimestamp;
+      default:
+        return raw[key];
+    }
+  }
+
+  factory MessagesSyncResponse.fromJson(Map<String, dynamic> json) {
+    final mode = (json['mode'] as String?)?.toLowerCase() ?? 'full';
+    final rawMessages = (json['messages'] ?? json['newMessages']) as List? ?? const [];
+    final rawChats = (json['chats'] ?? json['updatedChats']) as List? ?? const [];
+    final lastSeq = (json['last_seq'] as num?)?.toInt() ??
+        (json['lastSeq'] as num?)?.toInt() ??
+        int.tryParse('${json['last_seq'] ?? json['lastSeq']}') ??
+        0;
+    final highestPts = (json['highest_pts'] as num?)?.toInt() ??
+        (json['highestPts'] as num?)?.toInt() ??
+        int.tryParse('${json['highest_pts'] ?? json['highestPts']}') ??
+        0;
+    final nextSyncTimestamp = (json['next_sync_timestamp'] as num?)?.toInt() ??
+        (json['nextSyncTimestamp'] as num?)?.toInt() ??
+        int.tryParse('${json['next_sync_timestamp'] ?? json['nextSyncTimestamp']}') ??
+        0;
+
+    return MessagesSyncResponse(
+      success: json['success'] == true || json['success'] == null,
+      mode: mode,
+      messages: List<dynamic>.unmodifiable(rawMessages),
+      chats: List<dynamic>.unmodifiable(rawChats),
+      lastSeq: lastSeq,
+      highestPts: highestPts,
+      nextSyncTimestamp: nextSyncTimestamp,
+      raw: json,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'success': success,
+        'mode': mode,
+        'messages': messages,
+        'chats': chats,
+        'last_seq': lastSeq,
+        'highest_pts': highestPts,
+        'next_sync_timestamp': nextSyncTimestamp,
+      };
+
+  @override
+  List<Object?> get props => [
+        success,
+        mode,
+        messages,
+        chats,
+        lastSeq,
+        highestPts,
+        nextSyncTimestamp,
+      ];
+}

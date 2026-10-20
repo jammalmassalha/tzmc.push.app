@@ -225,9 +225,58 @@ GET /messages?user={username}
 }
 ```
 
-### Get Messages from Logs (History Sync)
+### Sync Messages and Chats (History Sync)
 ```
-GET /messages/logs?user={username}&excludeSystem=1&limit=1000&offset=0&since=0
+POST /messages/sync
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user": "<username>",
+  "last_sync_timestamp": 0
+}
+```
+
+**Response (Full Sync):**
+```json
+{
+  "mode": "full",
+  "messages": [
+    {
+      "messageId": "msg-123",
+      "sender": "user1",
+      "body": "Hello!",
+      "timestamp": 1699999999999,
+      "groupId": null
+    }
+  ],
+  "chats": [
+    {
+      "chatId": "user1",
+      "otherUser": "user1",
+      "lastMessage": "Hello!",
+      "lastTimestamp": 1699999999999,
+      "unreadCount": 0
+    }
+  ],
+  "last_seq": 100,
+  "highest_pts": 100,
+  "next_sync_timestamp": 1700000000000
+}
+```
+
+**Response (Delta Sync):**
+```json
+{
+  "mode": "delta",
+  "newMessages": [],
+  "updatedChats": [],
+  "last_seq": 105,
+  "highest_pts": 105,
+  "next_sync_timestamp": 1700000050000
+}
 ```
 
 ### Report Message Received
