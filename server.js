@@ -2454,6 +2454,10 @@ async function resolveContactDisplayName(user) {
     const key = String(user || '').trim();
     if (!key) return '';
     try {
+        if (typeof mysqlLogsService.getSubscribeNameByUser === 'function') {
+            const direct = await mysqlLogsService.getSubscribeNameByUser(key);
+            if (direct) return direct;
+        }
         if (Date.now() - contactNameCache.at > 5 * 60 * 1000) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();

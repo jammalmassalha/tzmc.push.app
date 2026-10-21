@@ -3116,6 +3116,29 @@ export class MysqlLogsService {
     }
   }
 
+  async getSubscribeNameByUser(user: string): Promise<string> {
+    const key = String(user || '').trim();
+    if (!key) return '';
+    await this.ensureSubscribeTable();
+    try {
+      const [rows] = await this.pool.query<RowDataPacket[]>(
+        'SELECT `FullName`, `ExeptionName` FROM `Subscribe` WHERE `User` = ? LIMIT 1',
+        [key]
+      );
+      if (!rows || rows.length === 0) return '';
+      const clean = (v: unknown): string => {
+        const t = String(v == null ? '' : v);
+        const i = t.indexOf('(');
+        const s = (i >= 0 ? t.slice(0, i) : t).trim();
+        return s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' ? '' : s;
+      };
+      return clean(rows[0].ExeptionName) || clean(rows[0].FullName);
+    } catch (err: unknown) {
+      console.error('[MYSQL] getSubscribeNameByUser error:', String((err as { message?: string }).message || ''));
+      return '';
+    }
+  }
+
   async getContacts(requestingUser?: string): Promise<any[]> {
     await this.ensureSubscribeTable();
     try {
