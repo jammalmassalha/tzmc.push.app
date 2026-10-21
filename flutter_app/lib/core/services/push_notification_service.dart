@@ -42,7 +42,7 @@ import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart';
 import '../models/chat_models.dart'
-    show ChatMessage, DeliveryStatus, MessageDirection;
+    show ChatMessage, Contact, DeliveryStatus, MessageDirection;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
