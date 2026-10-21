@@ -6828,6 +6828,19 @@ registerFlutterPushRoutes(app, {
 });
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
+    // Safety net: never show a raw phone number as the title when the sender
+    // has a name in Subscribe (ExeptionName, then FullName, cleaned).
+    try {
+        if (message && typeof message === 'object' && senderuser) {
+            const title = String(message.title || '').trim();
+            const digits = title.replace(/[\s+\-()]/g, '');
+            const senderDigits = String(senderuser).replace(/[\s+\-()]/g, '');
+            if (title && /^\d{7,}$/.test(digits) && digits === senderDigits) {
+                const friendly = await resolveContactDisplayName(senderuser);
+                if (friendly) message = { ...message, title: friendly };
+            }
+        }
+    } catch (_e) { /* keep original title */ }
     // Fire-and-forget fan-out to Flutter FCM tokens immediately, WITHOUT waiting
     // for the web-push pipeline. The web-push pipeline may block for several
     // seconds (or up to ~1 minute) while it looks up subscriptions from Google
@@ -9136,9 +9149,10 @@ async function checkOutgoingQueue() {
                     continue;
                 }
 
+                const queueSenderLabel = (await resolveContactDisplayName(senderName)) || senderName;
                 const notificationData = {
                     messageId,
-                    title: `Message from ${senderName}`,
+                    title: `Message from ${queueSenderLabel}`,
                     body: {
                         shortText: bodyText,
                         longText: bodyText
