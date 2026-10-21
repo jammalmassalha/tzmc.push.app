@@ -3,6 +3,8 @@
 /// Main entry point for the application.
 library;
 
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -24,7 +26,20 @@ import 'features/auth/presentation/auth_state.dart';
 import 'features/auth/presentation/login_screen.dart';
 import 'features/chat/presentation/chat_shell_screen.dart';
 
-void main() async {
+/// The app never writes to the console (web, iOS, Android): `debugPrint` is a
+/// no-op and plain `print` calls are swallowed by the root zone.
+void main() {
+  debugPrint = (String? message, {int? wrapWidth}) {};
+  runZonedGuarded(
+    _bootstrap,
+    (error, stack) {},
+    zoneSpecification: ZoneSpecification(
+      print: (self, parent, zone, line) {},
+    ),
+  );
+}
+
+Future<void> _bootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
   PaintingBinding.instance.imageCache.maximumSizeBytes = 50 * 1024 * 1024;
 
