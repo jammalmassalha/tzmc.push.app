@@ -6836,10 +6836,13 @@ async function sendPushNotificationToUser(targetUser, message, senderuser, optio
     // has a name in Subscribe (FullName, then ExeptionName, cleaned).
     try {
         if (message && typeof message === 'object' && senderuser) {
+            const md = (message.data && typeof message.data === 'object') ? message.data : {};
+            const isGroupMsg = md.isGroup === true || md.isGroup === 'true' || Boolean(md.groupId) ||
+                Boolean(options && (options.groupId || options.isGroup === true || options.isGroup === 'true'));
             const title = String(message.title || '').trim();
             const digits = title.replace(/[\s+\-()]/g, '');
-            const senderDigits = String(senderuser).replace(/[\s+\-()]/g, '');
-            if (title && /^\d{7,}$/.test(digits) && digits === senderDigits) {
+            const looksLikePhone = /^\d{7,}$/.test(digits);
+            if (!isGroupMsg && (!title || looksLikePhone)) {
                 const friendly = await resolveContactDisplayName(senderuser);
                 if (friendly) message = { ...message, title: friendly };
             }
