@@ -118,7 +118,8 @@ class NotificationService {
             const hasImage = Boolean(payloadData.image || payloadData.imageUrl);
             if (hasImage)
                 return 'Sent an image';
-            if (payloadData.fileUrl || payloadData.file)
+            const hasFile = Boolean(payloadData.fileUrl || payloadData.file);
+            if (hasFile)
                 return 'Sent a file';
             const hasLocation = payloadData.location ||
                 payloadData.locationText ||
