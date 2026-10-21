@@ -140,7 +140,13 @@ class Contact extends Equatable {
   factory Contact.fromJson(Map<String, dynamic> json) {
     final fullName = (json['fullName'] ?? json['full_name'] ?? '').toString().trim();
     final displayNameRaw = (json['displayName'] ?? '').toString().trim();
-    final name = _parseNameAndInfo(fullName.isNotEmpty ? fullName : displayNameRaw);
+    final exceptionName =
+        (json['exceptionName'] ?? json['ExeptionName'] ?? '').toString().trim();
+    final name = _parseNameAndInfo(
+      fullName.isNotEmpty
+          ? fullName
+          : (displayNameRaw.isNotEmpty ? displayNameRaw : exceptionName),
+    );
 
     int? status;
     final statusVal = json['status'] ?? json['accessStatus'] ?? json['userStatus'];

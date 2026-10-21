@@ -1366,7 +1366,7 @@ class PushNotificationService {
   /// Resolves the title from the local Drift store: the group name for group
   /// chats, otherwise the cleaned contact name for the sender. Keeps [fallback]
   /// (e.g. the raw phone number) when nothing is found locally.
-  static Future<String> _resolveLocalTitle(
+  Future<String> _resolveLocalTitle(
     Map<String, dynamic> data,
     String fallback,
   ) async {
@@ -1391,9 +1391,35 @@ class PushNotificationService {
           _looksGenericNotificationText(fallback) ||
           digits(fallback) == digits(sender);
       if (!titleIsSender) return fallback;
-      final contact = await database.getContact(sender);
-      final name = _stripParenMetadata(contact?.displayName ?? '');
-      return name.isNotEmpty ? name : fallback;
+      final senderDigits = digits(sender);
+      String nameOf(Contact? c) => _stripParenMetadata(c?.displayName ?? '');
+      Contact? matchIn(Iterable<Contact> list) {
+        for (final c in list) {
+          if (c.username.trim().toLowerCase() == sender.toLowerCase() ||
+              (senderDigits.isNotEmpty && digits(c.username) == senderDigits)) {
+            return c;
+          }
+        }
+        return null;
+      }
+
+      var name = nameOf(await database.getContact(sender));
+      if (name.isEmpty) name = nameOf(matchIn(await database.getAllContacts()));
+      if (name.isNotEmpty) return name;
+
+      // Not cached locally: fetch contacts from the server and cache them.
+      try {
+        final remote = await _api
+            .getContacts()
+            .timeout(const Duration(seconds: 6));
+        final match = matchIn(remote);
+        name = nameOf(match);
+        if (match != null && name.isNotEmpty) {
+          unawaited(database.upsertContact(match).catchError((_) {}));
+          return name;
+        }
+      } catch (_) {}
+      return fallback;
     } catch (_) {
       return fallback;
     }
