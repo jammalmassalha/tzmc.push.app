@@ -4308,8 +4308,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
         final normalized = await _parseIncomingOffThread(newMessages);
 
-        for (final message in normalized) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
+        // One batched state emission for the whole delta.
+        if (normalized.length > 1) {
+          _applyDeltaBatch(normalized);
+        } else {
+          for (final message in normalized) {
+            _handleServerMessage(_normalizeLogMessageForImport(message));
+          }
         }
 
         if (syncResult.nextSyncTimestamp > _syncCursorMs) {
@@ -4321,29 +4326,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     } catch (e) {
       debugPrint('[RECONNECT-SYNC] Reconnection sync failed: $e');
-    }
-
-    await _syncKnownChats();
-  }
-
-  Future<void> _syncKnownChats() async {
-    final user = _currentUser;
-    if (user == null || user.isEmpty) return;
-    final chatIds = state.messagesByChat.keys.toList(growable: false);
-    for (final chatId in chatIds) {
-      try {
-        final sincePts = await _db.getHighestPts(chatId);
-        final diff = await _api.syncChat(
-          chatId: chatId,
-          sincePts: sincePts,
-          user: user,
-        );
-        for (final message in diff) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
-        }
-      } catch (_) {
-        // The existing recovery path remains available on the next poll tick.
-      }
     }
   }
 
