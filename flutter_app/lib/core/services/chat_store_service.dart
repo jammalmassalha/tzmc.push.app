@@ -682,11 +682,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // messages, or unread counts from Drift/SQLite or browser storage.
       // The API synchronization below is the only startup source of chat
       // data, avoiding stale or incomplete cache snapshots on web.
+      // Unread counters are the exception: they are restored from the local
+      // database and the FCM background tray so that opening the app does not
+      // wipe the badges of chats the user has not opened yet.
+      final restoredUnread = await _restoreUnreadCounts();
       state = state.copyWith(
         contacts: const {},
         groups: const {},
         messagesByChat: const {},
-        unreadByChat: const {},
+        unreadByChat: restoredUnread,
         deletedChats: deletedChats,
         isLoading: false,
         isInitialized: true,
@@ -1644,8 +1648,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         final normalizedMessages = await _parseIncomingOffThread(newMessages);
 
         if (needsFullSync) {
+          final unreadBaseline = Map<String, int>.from(state.unreadByChat);
           await _applyImportedMessages(normalizedMessages);
-          state = state.copyWith(unreadByChat: const {});
+          state = state.copyWith(unreadByChat: unreadBaseline);
           if (syncResult.nextSyncTimestamp > _syncCursorMs) {
             _syncCursorMs = syncResult.nextSyncTimestamp;
             await _writeSyncCursor(user);
@@ -1777,6 +1782,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (!localDbHasMessages || !hasInMemoryMessages) {
         // No visible in-memory history (first install, DB cleared, or a
         // server-authoritative startup): use /messages/sync with last_sync_timestamp: 0
+        final unreadBaseline = Map<String, int>.from(state.unreadByChat);
         final syncResult = await _api.syncChatsAndMessages(
           user: user,
           lastSyncTimestamp: 0,
@@ -1810,7 +1816,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Explicitly clear any unread counts that may have been accumulated
         // from realtime messages (socket/SSE) that arrived concurrently during
         // the batch import.
-        state = state.copyWith(unreadByChat: const {});
+        state = state.copyWith(unreadByChat: unreadBaseline);
       } else {
         // Incremental update: use the normal per-message handler so that new
         // messages increment unread counts for the user.
@@ -4382,6 +4388,25 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// map on web (where the FCM background handler is not used) and on any
   /// error (failures are non-fatal; the recovery pull already handles the
   /// common case).
+  Future<Map<String, int>> _restoreUnreadCounts() async {
+    final restored = <String, int>{};
+    try {
+      final stored = await _db.getAllUnreadCounts();
+      stored.forEach((chatId, count) {
+        if (count > 0) restored[normalizeChatId(chatId)] = count;
+      });
+    } catch (e) {
+      debugPrint('[ChatStore] Failed to restore unread counts: $e');
+    }
+    final tray = await _readAndClearPendingTray();
+    tray.forEach((chatId, count) {
+      final id = normalizeChatId(chatId);
+      final current = restored[id] ?? 0;
+      if (count > current) restored[id] = count;
+    });
+    return restored;
+  }
+
   Future<Map<String, int>> _readAndClearPendingTray() async {
     if (kIsWeb) return {};
     try {
