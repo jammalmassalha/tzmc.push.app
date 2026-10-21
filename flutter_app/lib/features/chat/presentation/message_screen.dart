@@ -90,7 +90,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
   /// so the scroll listener can compute the floating date without BuildContext.
   List<ChatMessage> _currentMessages = [];
   final GlobalKey _messagesListKey = GlobalKey(debugLabel: 'messagesList');
-  final Map<String, GlobalKey> _messageItemKeys = <String, GlobalKey>{};
 
   /// Track loading state for initial message fetch and pagination
   bool _isLoadingInitialMessages = true;
@@ -117,12 +116,28 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     }
   }
 
-  GlobalKey _keyForMessage(String messageId) {
-    final existing = _messageItemKeys[messageId];
-    if (existing != null) return existing;
-    final created = GlobalKey(debugLabel: 'message_$messageId');
-    _messageItemKeys[messageId] = created;
-    return created;
+  static const String _messageKeyPrefix = 'msg_';
+
+  Key _keyForMessage(String messageId) => ValueKey('$_messageKeyPrefix$messageId');
+
+  /// Finds the render boxes of currently built message rows by walking the
+  /// list's element tree (only visible/cached rows exist), so no per-message
+  /// GlobalKey is needed.
+  Map<String, RenderBox> _builtMessageBoxes(BuildContext listContext) {
+    final result = <String, RenderBox>{};
+    void visit(Element element) {
+      final key = element.widget.key;
+      if (key is ValueKey<String> && key.value.startsWith(_messageKeyPrefix)) {
+        final object = element.renderObject;
+        if (object is RenderBox && object.hasSize) {
+          result[key.value.substring(_messageKeyPrefix.length)] = object;
+        }
+        return;
+      }
+      element.visitChildren(visit);
+    }
+    (listContext as Element).visitChildren(visit);
+    return result;
   }
 
   Contact? _findContact(ChatState state, String value) {
@@ -298,11 +313,10 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     ChatMessage? topVisibleMessage;
     double? topVisibleDy;
 
+    final builtBoxes = _builtMessageBoxes(listContext!);
     for (final message in _currentMessages) {
-      final key = _messageItemKeys[message.id];
-      final ctx = key?.currentContext;
-      final object = ctx?.findRenderObject();
-      if (object is! RenderBox) continue;
+      final object = builtBoxes[message.id];
+      if (object == null) continue;
 
       final top = object.localToGlobal(Offset.zero).dy;
       final bottom = top + object.size.height;
@@ -406,8 +420,15 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(chatStoreProvider);
     final normalizedChatId = _normalizedChatId;
+    // Rebuild only when data this screen renders changes (this chat's messages,
+    // groups, contacts) instead of on every chat-store state emission.
+    ref.watch(chatStoreProvider.select((s) => (
+          s.messagesByChat[normalizedChatId] ?? s.messagesByChat[widget.chatId],
+          s.groups,
+          s.contacts,
+        )));
+    final state = ref.read(chatStoreProvider);
     final messagesAsync = ref.watch(chatMessagesStreamProvider(normalizedChatId));
     final cachedMessages =
         state.messagesByChat[normalizedChatId] ?? state.messagesByChat[widget.chatId] ?? const <ChatMessage>[];
@@ -493,8 +514,6 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
     // Keep _currentMessages in sync so the scroll listener can access the
     // latest message list for floating-date computation.
     _currentMessages = messages;
-    final visibleMessageIds = messages.map((m) => m.id).toSet();
-    _messageItemKeys.removeWhere((id, _) => !visibleMessageIds.contains(id));
     if (!_searchActive && messages.isNotEmpty) {
       _scheduleStickyDateRefresh();
     }
@@ -838,7 +857,8 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                         context,
                                         message.timestamp,
                                       ),
-                                    _MessageBubble(
+                                    RepaintBoundary(
+                                      child: _MessageBubble(
                                       message: message,
                                       isGroup: messageIsFromGroup,
                                       resolvedSenderLabel: resolvedSenderLabel,
@@ -878,6 +898,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
                                           : null,
                                       onCopy: () => _handleCopy(message),
                                       onForward: () => _handleForward(message),
+                                    ),
                                     ),
                                   ],
                                 ),
@@ -975,7 +996,7 @@ class _MessageScreenState extends ConsumerState<MessageScreen> {
 
               // Typing indicator (hidden while searching)
               if (!_searchActive)
-                _TypingIndicatorRow(chatId: normalizedChatId, state: state),
+                _TypingIndicatorRow(chatId: normalizedChatId),
 
               // Message composer (hidden while searching)
               if (!_searchActive)
@@ -2677,16 +2698,18 @@ class _EditPreview extends StatelessWidget {
 
 /// Shows a "…is typing" bubble below the message list.
 /// Only visible when another user in this chat is actively typing.
-class _TypingIndicatorRow extends StatelessWidget {
+class _TypingIndicatorRow extends ConsumerWidget {
   final String chatId;
-  final ChatState state;
 
-  const _TypingIndicatorRow({required this.chatId, required this.state});
+  const _TypingIndicatorRow({required this.chatId});
 
   @override
-  Widget build(BuildContext context) {
-    final typingSet = state.typingByChatId[chatId] ?? const <String>{};
+  Widget build(BuildContext context, WidgetRef ref) {
+    final typingSet = ref.watch(
+      chatStoreProvider.select((s) => s.typingByChatId[chatId] ?? const <String>{}),
+    );
     if (typingSet.isEmpty) return const SizedBox.shrink();
+    final state = ref.read(chatStoreProvider);
 
     // Resolve display names for the typing users.
     String label;

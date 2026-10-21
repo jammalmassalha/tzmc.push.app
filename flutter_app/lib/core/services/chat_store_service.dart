@@ -511,17 +511,38 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalized = <String, List<ChatMessage>>{};
     for (final entry in messagesByChat.entries) {
       final chatId = normalizeChatId(entry.key);
+
+      // Fast path: an already-normalized, duplicate-free chat keeps its list
+      // identity, so selectors/widgets watching it are not invalidated.
+      if (chatId == entry.key && !normalized.containsKey(chatId)) {
+        final seen = <String>{};
+        var clean = true;
+        for (final message in entry.value) {
+          if (message.chatId != chatId || !seen.add(_messageDedupKey(message))) {
+            clean = false;
+            break;
+          }
+        }
+        if (clean) {
+          normalized[chatId] = entry.value;
+          continue;
+        }
+      }
+
       final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
+      final indexByKey = <String, int>{
+        for (var i = 0; i < chatMessages.length; i++) _messageDedupKey(chatMessages[i]): i,
+      };
       for (final message in entry.value) {
         final normalizedMessage =
             message.chatId == chatId ? message : message.copyWith(chatId: chatId);
-        final existingIndex = chatMessages.indexWhere(
-          (existing) => _messageDedupKey(existing) == _messageDedupKey(normalizedMessage),
-        );
+        final key = _messageDedupKey(normalizedMessage);
+        final existingIndex = indexByKey[key] ?? -1;
         if (existingIndex >= 0) {
           chatMessages[existingIndex] =
               _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
         } else {
+          indexByKey[key] = chatMessages.length;
           chatMessages.add(normalizedMessage);
         }
       }
@@ -1592,8 +1613,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Route each message through the same handler used by realtime transport
         // so that action payloads (read-receipt, delete-action, etc.) are handled
         // correctly and regular messages are applied to the chat store.
-        for (final message in normalizedMessages) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
+        // Batch the delta: text messages are merged and emitted once (instead of
+        // one state emission per message); unread badges are updated in a
+        // single emission too. Action payloads keep their dedicated handlers.
+        if (normalizedMessages.length > 1) {
+          _applyDeltaBatch(normalizedMessages);
+        } else {
+          for (final message in normalizedMessages) {
+            _handleServerMessage(_normalizeLogMessageForImport(message));
+          }
         }
 
         if (syncResult.nextSyncTimestamp > _syncCursorMs) {
@@ -1608,6 +1636,42 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[PULL] pullMessages failed: $e');
     } finally {
       _isPullingMessages = false;
+    }
+  }
+
+  /// Applies a delta of server messages with a single state emission for the
+  /// text messages and a single emission for the unread badges.
+  void _applyDeltaBatch(List<IncomingServerMessage> raw) {
+    final prepared = _prepareImportedMessages(raw);
+
+    final knownIds = <String>{
+      for (final messages in state.messagesByChat.values)
+        for (final m in messages) m.messageId,
+    };
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    final activeChatId = normalizeChatId(state.currentChatId ?? '');
+    final unreadIncrements = <String, int>{};
+    for (final m in prepared.textMessages) {
+      if (m.messageId.isEmpty || knownIds.contains(m.messageId)) continue;
+      if (m.direction != MessageDirection.incoming) continue;
+      final chatId = normalizeChatId(m.chatId);
+      if (chatId == activeChatId && isAppForeground) continue;
+      unreadIncrements[chatId] = (unreadIncrements[chatId] ?? 0) + 1;
+    }
+
+    if (prepared.textMessages.isNotEmpty) {
+      _applyMessagesBatch(prepared.textMessages);
+    }
+    if (unreadIncrements.isNotEmpty) {
+      final newUnread = Map<String, int>.from(state.unreadByChat);
+      unreadIncrements.forEach((chatId, count) {
+        newUnread[chatId] = (newUnread[chatId] ?? 0) + count;
+      });
+      state = state.copyWith(unreadByChat: newUnread);
+    }
+    for (final msg in prepared.actionMessages) {
+      _handleServerMessage(msg);
     }
   }
 
@@ -2184,6 +2248,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final newMessagesByChat =
         _normalizeMessagesByChatMap(state.messagesByChat);
+    final touchedChatIds = <String>{};
 
     for (final message in messages) {
       final chatId = normalizeChatId(message.chatId);
@@ -2206,14 +2271,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
 
       newMessagesByChat[chatId] = chatMessages;
+      touchedChatIds.add(chatId);
     }
 
-    // Sort each chat descending by timestamp and trim to the per-chat cap.
-    for (final entry in newMessagesByChat.entries) {
-      final msgs = entry.value;
+    // Sort only the chats that changed (descending by timestamp) and trim to
+    // the per-chat cap; untouched chats keep their identity.
+    for (final chatId in touchedChatIds) {
+      final msgs = newMessagesByChat[chatId]!;
       msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
-        newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
+        newMessagesByChat[chatId] = msgs.sublist(0, maxMessagesPerChat);
       }
     }
 
@@ -3877,7 +3944,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
      // Scan only recent outgoing messages (chatMessages are sorted newest-first
      // by _applyIncomingMessage), bailing out as soon as we step outside the
      // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
-     final existing = _normalizeMessagesByChatMap(state.messagesByChat)[chatId] ?? const <ChatMessage>[];
+     final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
      bool hasOptimisticEcho = false;
      final trimmedBody = body.trim();
      for (final m in existing) {
