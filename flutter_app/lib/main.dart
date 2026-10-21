@@ -198,7 +198,6 @@ class _AuthRouterState extends ConsumerState<AuthRouter> {
     final authState = ref.watch(authStateProvider);
     final requestedPath = AppRoutes.normalizePath(widget.requestedPath);
 
-    print('[AuthRouter] Building - authState: $authState, requestedPath: $requestedPath');
     
     return switch (authState) {
       AuthLoading() => const SplashScreen(),

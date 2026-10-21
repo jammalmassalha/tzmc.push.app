@@ -800,9 +800,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (isFirst || isWebReload) {
         await _forceFullSync(user);
         if (isFirst) {
-          print('🚀 [Sync] First load detected - forcing full sync for user: $user');
         } else if (isWebReload) {
-          print('🔄 [Sync] Web hard reload detected - forcing full sync for user: $user');
         }
       }
     }
@@ -4395,10 +4393,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
       
       final messageCount = state.messagesByChat.values.fold(0, (sum, msgs) => sum + msgs.length);
-      print('📊 [PersistState] Starting persistence for user: $user');
-      print('📊 [PersistState] Messages in state: $messageCount');
-      print('📊 [PersistState] Contacts: ${state.contacts.length}');
-      print('📊 [PersistState] Groups: ${state.groups.length}');
       
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
@@ -4409,20 +4403,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       try {
         await _db.persistState(snapshot);
-        print('✅ [PersistState] Successfully persisted to Drift database');
       } catch (e) {
-        print('❌ [PersistState] Drift DB error: $e');
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           await WebChatStorage.persistState(user, snapshot);
-          print('✅ [PersistState] Fell back to WebStorage');
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
       await _writeSyncCursor(user);
     } catch (e) {
-      print('❌ [PersistState] Error: $e');
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }
@@ -4476,7 +4466,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final syncCursor = await _readSyncCursor(user);
       final isFirst = syncCursor == 0;
       if (isFirst) {
-        print('🚀 [FirstLoad] Detected first load for user: $user - forcing full sync');
       }
       return isFirst;
     } catch (_) {
@@ -4499,7 +4488,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // If no previous session ID, this is either first load or hard reload
       if (lastSessionId == null) {
         await prefs.setString(hardReloadKey, newSessionId);
-        print('🔄 [WebHardReload] Detected web hard reload - resetting sync cursor');
         return true;
       }
       
@@ -4515,7 +4503,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Force full sync by resetting the sync cursor to 0.
   /// Called on first load or hard reload to ensure complete data sync.
   Future<void> _forceFullSync(String user) async {
-    print('💾 [ForceFullSync] Resetting sync cursor to 0 for full sync');
     _syncCursorMs = 0;
     await _clearSyncCursor(user);
   }
