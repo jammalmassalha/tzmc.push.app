@@ -511,6 +511,21 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     ].join('|');
   }
 
+  /// Canonical chat id for a stored message. Direct chats must always be keyed
+  /// by the OTHER participant; a non-group message from someone else that is
+  /// filed under the current user's own id (a "phantom" self-chat) is
+  /// re-keyed to its sender.
+  String _canonicalChatId(ChatMessage message) {
+    final id = normalizeChatId(message.chatId);
+    final me = _currentUser?.trim().toLowerCase() ?? '';
+    if (me.isEmpty || id != me) return id;
+    if ((message.groupId ?? '').trim().isNotEmpty || state.groups.containsKey(id)) {
+      return id;
+    }
+    final sender = normalizeChatId(message.sender);
+    return (sender.isNotEmpty && sender != me) ? sender : id;
+  }
+
   Map<String, List<ChatMessage>> _normalizeMessagesByChatMap(
     Map<String, List<ChatMessage>> messagesByChat,
   ) {
@@ -526,7 +541,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         final seen = <String>{};
         var clean = true;
         for (final message in entry.value) {
-          if (message.chatId != chatId || !seen.add(_messageDedupKey(message))) {
+          if (message.chatId != chatId ||
+              _canonicalChatId(message) != chatId ||
+              !seen.add(_messageDedupKey(message))) {
             clean = false;
             break;
           }
@@ -537,13 +554,14 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         }
       }
 
-      final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
-      final indexByKey = <String, int>{
-        for (var i = 0; i < chatMessages.length; i++) _messageDedupKey(chatMessages[i]): i,
-      };
       for (final message in entry.value) {
+        final targetId = _canonicalChatId(message);
+        final chatMessages = normalized.putIfAbsent(targetId, () => <ChatMessage>[]);
+        final indexByKey = <String, int>{
+          for (var i = 0; i < chatMessages.length; i++) _messageDedupKey(chatMessages[i]): i,
+        };
         final normalizedMessage =
-            message.chatId == chatId ? message : message.copyWith(chatId: chatId);
+            message.chatId == targetId ? message : message.copyWith(chatId: targetId);
         final key = _messageDedupKey(normalizedMessage);
         final existingIndex = indexByKey[key] ?? -1;
         if (existingIndex >= 0) {
@@ -626,6 +644,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // as outgoing (avoids the "see my message twice" bug).
     _currentUser = normalized;
     await _clearLocalDataOnFirstLaunch(normalized);
+    try {
+      await _db.repairSelfChatMessages(normalized);
+    } catch (e) {
+      debugPrint('[CHAT] repairSelfChatMessages failed: $e');
+    }
     debugPrint('SYNC_TRACE: Auth complete, triggering syncOnLaunch()');
     unawaited(_retryOutbox());
     unawaited(ref.read(outboxProcessorProvider).drainQueue());
@@ -984,7 +1007,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Map<String, List<ChatMessage>> _groupMessagesByChat(List<ChatMessage> messages) {
     final result = <String, List<ChatMessage>>{};
     for (final message in messages) {
-      final chatId = normalizeChatId(message.chatId);
+      final chatId = _canonicalChatId(message);
       final normalizedMessage = message.chatId == chatId ? message : message.copyWith(chatId: chatId);
       final chatMessages = result.putIfAbsent(chatId, () => []);
       final existingIndex = _findEquivalentMessageIndex(chatMessages, normalizedMessage);
@@ -2266,7 +2289,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final touchedChatIds = <String>{};
 
     for (final message in messages) {
-      final chatId = normalizeChatId(message.chatId);
+      final chatId = _canonicalChatId(message);
       final normalizedMessage =
           message.chatId == chatId ? message : message.copyWith(chatId: chatId);
       final deletedAt = _deletedChatTimestamp(chatId);
@@ -2758,37 +2781,36 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final meNorm = _currentUser?.trim().toLowerCase() ?? '';
     final senderNorm = sender.trim().toLowerCase();
     final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
-    final payloadChatId = str(data['chatId']);
+    final payloadChatId = str(data['chatId'])?.toLowerCase();
+    final toUserNorm = (str(data['toUser']) ?? '').trim().toLowerCase();
+    // The server's `chatId` for a direct message is the RECIPIENT's id, which
+    // on the receiving device is the current user. Never trust it blindly:
+    // direct chats are always keyed by the other participant.
     String chatId;
-    if (payloadChatId != null) {
-      chatId = payloadChatId.toLowerCase();
-    } else if (isGroup) {
+    if (isGroup) {
       chatId = normalizedGroupId!;
     } else if (isSelfEcho || skipNotification) {
-      // Use only toUser — never fall back to recipient for self-echo messages.
-      final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
-      // Discard if there is no deterministic chat partner: this can happen with
-      // old self-echo DB log entries where ToUser == sender (self-chat artifact).
-      if (toUser.isEmpty || toUser == meNorm || toUser == senderNorm) return;
-      chatId = toUser;
-    } else {
-      // For incoming DM messages from others, we need to use the sender as chatId.
-      // BUT first, protect against self-chat creation by checking if the sender
-      // is actually us (in case of normalization mismatches or race conditions).
-      if (meNorm.isNotEmpty && senderNorm == meNorm) {
-        // This is actually a self-echo that wasn't caught above.
-        // Try to use toUser if available, otherwise skip to prevent self-chat.
-        final toUser = (str(data['toUser']) ?? '').trim().toLowerCase();
-        if (toUser.isEmpty || toUser == meNorm) {
-          // Can't determine the other party, skip this message
-          debugPrint('[CHAT] ⚠️ Skipping self-echo without deterministic toUser: sender=$senderNorm, toUser=$toUser');
-          return;
-        }
-        chatId = toUser;
-      } else {
-        // Normal case: incoming message from someone else, group by their ID
-        chatId = senderNorm;
+      // Self-echo: sender is me, so the partner is toUser (or a payload chatId
+      // that is not me). Never fall back to recipient.
+      final candidate = toUserNorm.isNotEmpty
+          ? toUserNorm
+          : ((payloadChatId != null && payloadChatId != meNorm) ? payloadChatId : '');
+      // Discard if there is no deterministic chat partner (old self-echo DB
+      // log entries where ToUser == sender).
+      if (candidate.isEmpty || candidate == meNorm || candidate == senderNorm) return;
+      chatId = candidate;
+    } else if (meNorm.isNotEmpty && senderNorm == meNorm) {
+      final candidate = toUserNorm.isNotEmpty
+          ? toUserNorm
+          : ((payloadChatId != null && payloadChatId != meNorm) ? payloadChatId : '');
+      if (candidate.isEmpty || candidate == meNorm) {
+        debugPrint('[CHAT] ⚠️ Skipping self-echo without deterministic toUser: sender=$senderNorm');
+        return;
       }
+      chatId = candidate;
+    } else {
+      // Incoming DM from someone else: the thread is the sender.
+      chatId = senderNorm;
     }
 
     // Backend may include either the full body (messageText) or a truncated

@@ -606,6 +606,26 @@ class ChatDatabase extends _$ChatDatabase {
     });
   }
 
+  /// Re-keys phantom self-chat rows: non-group messages from another sender
+  /// that were filed under the current user's own id are moved to the sender's
+  /// chat. Own messages filed under [me] have no recoverable partner and are
+  /// removed.
+  Future<void> repairSelfChatMessages(String me) async {
+    final key = me.trim().toLowerCase();
+    if (key.isEmpty) return;
+    await customStatement(
+      "UPDATE messages SET chat_id = LOWER(TRIM(sender)) "
+      "WHERE LOWER(TRIM(chat_id)) = ? AND LOWER(TRIM(sender)) != ? "
+      "AND TRIM(sender) != '' AND (group_id IS NULL OR TRIM(group_id) = '')",
+      [key, key],
+    );
+    await customStatement(
+      "DELETE FROM messages WHERE LOWER(TRIM(chat_id)) = ? "
+      "AND LOWER(TRIM(sender)) = ? AND (group_id IS NULL OR TRIM(group_id) = '')",
+      [key, key],
+    );
+  }
+
   Future<void> deleteMessage(String id) async {
     await (delete(messages)..where((t) => t.id.equals(id))).go();
   }
