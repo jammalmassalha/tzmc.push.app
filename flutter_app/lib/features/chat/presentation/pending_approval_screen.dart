@@ -74,7 +74,6 @@ class _PendingApprovalScreenState extends ConsumerState<PendingApprovalScreen> {
 
   @override
   Widget build(BuildContext context) {
-    print('[PendingApprovalScreen] Building - User account pending approval');
     final theme = Theme.of(context);
     return Directionality(
       textDirection: TextDirection.rtl,

@@ -472,7 +472,10 @@ function registerMessageController(app, deps = {}) {
             // Parse limit and offset for pagination (default to 100 results per page)
             const requestedLimit = Math.max(1, Math.min(1000, Number(req.query && req.query.limit) || 100));
             const requestedOffset = Math.max(0, Number(req.query && req.query.offset) || 0);
+            const requestedBefore = Math.max(0, Number(req.query && (req.query.before_timestamp ?? req.query.beforeTimestamp)) || 0);
+            const FULL_SYNC_MESSAGE_LIMIT = 500;
             let messages = [];
+            let chatFilteredInSql = false;
             const store = getActiveRedisStateStore();
             if (store && store.isEnabled && typeof store.readQueueSince === 'function') {
                 try {
@@ -493,19 +496,68 @@ function registerMessageController(app, deps = {}) {
             }
             if (typeof getMessageActivitiesForUser === 'function') {
                 try {
-                    messages = await getMessageActivitiesForUser(user, {
-                        limit: hasLastSyncTimestamp ? requestedLimit : Math.min(requestedLimit, 1000),
-                        offset: requestedOffset,
+                    // Resolve the groups this user may read. (Previously this referenced a
+                    // variable from another route's scope, which threw a ReferenceError and
+                    // silently fell back to the tiny in-memory mailbox.)
+                    const userAllowedGroupIds = new Set();
+                    try {
+                        const groups = typeof getGroups === 'function' ? getGroups() : {};
+                        Object.values(groups || {}).forEach((group) => {
+                            if (!group || typeof group !== 'object') return;
+                            const members = Array.isArray(group.members) ? group.members : (group.memberList || []);
+                            const normalizedMembers = members.map((m) => normalizeUserKey(m)).filter(Boolean);
+                            if (normalizedMembers.length > 0 && !normalizedMembers.includes(user)) return;
+                            const gid = normalizeUserKey(String(group.id || group.groupID || group.groupId || '').trim());
+                            if (gid) userAllowedGroupIds.add(gid);
+                        });
+                    } catch (_e) { }
+                    try {
+                        const dbGroups = typeof loadAllChatGroups === 'function' ? await loadAllChatGroups() : [];
+                        for (const dbGroup of dbGroups || []) {
+                            if (!dbGroup || !dbGroup.groupId) continue;
+                            const gid = normalizeUserKey(dbGroup.groupId);
+                            if (!gid) continue;
+                            const members = (dbGroup.members || []).map(normalizeUserKey).filter(Boolean);
+                            if (!members.length || members.includes(user)) userAllowedGroupIds.add(gid);
+                        }
+                    } catch (_e) { }
+                    const activityOptions = {
                         since: hasLastSyncTimestamp ? lastSyncTimestamp : 0,
                         includeActions: true,
                         includeMessages: true,
                         allowedGroupIds: Array.from(userAllowedGroupIds)
-                    });
+                    };
+                    if (requestedBefore > 0 || requestedChatId) {
+                        // Older-history page for a chat room (scroll-back pagination).
+                        chatFilteredInSql = Boolean(requestedChatId);
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            since: 0,
+                            beforeTimestamp: requestedBefore,
+                            chatId: requestedChatId,
+                            limit: requestedLimit,
+                            offset: requestedOffset
+                        });
+                    } else if (hasLastSyncTimestamp) {
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            limit: requestedLimit,
+                            offset: requestedOffset
+                        });
+                    } else {
+                        // Full sync: only the newest FULL_SYNC_MESSAGE_LIMIT rows. Older
+                        // history is fetched on demand when scrolling inside a chat room.
+                        messages = await getMessageActivitiesForUser(user, {
+                            ...activityOptions,
+                            limit: FULL_SYNC_MESSAGE_LIMIT,
+                            offset: 0
+                        });
+                    }
                 } catch (error) {
                     console.warn('[MYSQL] MessageActivities sync failed:', error && error.message ? error.message : error);
                 }
             }
-            if (requestedChatId) {
+            if (requestedChatId && !chatFilteredInSql) {
                 messages = messages.filter((message) => {
                     const value = String(message && (message.chatId || message.groupId || message.toUser || '') || '').trim();
                     return value === requestedChatId;
@@ -600,7 +652,11 @@ function registerMessageController(app, deps = {}) {
             }, lastSyncTimestamp);
             const chatById = new Map();
             for (const message of messages) {
-                const chatId = String(message.chatId || message.groupId || message.toUser || message.sender || '').trim();
+                const senderId = String(message.sender || '').trim().toLowerCase();
+                const peerId = senderId && senderId === String(user).trim().toLowerCase()
+                    ? message.toUser
+                    : message.sender;
+                const chatId = String(message.chatId || message.groupId || peerId || message.toUser || '').trim();
                 if (!chatId) continue;
                 const timestamp = Number(message.sentDateTime || message.timestamp || message.createdAt) ||
                     Date.parse(String(message.sentDateTime || message.timestamp || message.createdAt || '')) || 0;

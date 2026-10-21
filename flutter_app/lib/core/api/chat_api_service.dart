@@ -112,7 +112,6 @@ class ChatApiService {
     _cachedSessionResponse = response;
     _cachedSessionTimestampMs = DateTime.now().millisecondsSinceEpoch;
     if (response != null) {
-      print('💾 [SessionCache] Cached session for user: ${response.user} (expires in 5 min)');
     }
   }
 
@@ -120,12 +119,10 @@ class ChatApiService {
   Future<SessionResponse?> _getSessionResponseWithCache() async {
     // Return cached response if still valid
     if (_isSessionCacheValid()) {
-      print('✅ [SessionCache] Using cached session (${((DateTime.now().millisecondsSinceEpoch - _cachedSessionTimestampMs) / 1000).toStringAsFixed(1)}s old)');
       return _cachedSessionResponse;
     }
 
     // Cache expired or missing - fetch from API
-    print('🔄 [SessionCache] Cache expired or missing - fetching from API');
     try {
       final response = await _client.post<Map<String, dynamic>>(
         ApiEndpoints.sessionStatus,
@@ -151,7 +148,6 @@ class ChatApiService {
         return null;
       }
     } catch (e) {
-      print('❌ [SessionCache] API error: $e');
       _client.clearCsrfToken();
       return null;
     }
@@ -159,7 +155,6 @@ class ChatApiService {
 
   /// Clear session cache (e.g., on logout)
   void clearSessionCache() {
-    print('🗑️  [SessionCache] Clearing session cache');
     _cachedSessionResponse = null;
     _cachedSessionTimestampMs = 0;
     _sessionCacheRefreshTimer?.cancel();
@@ -169,11 +164,9 @@ class ChatApiService {
   /// Start periodic refresh of session cache every 5 minutes
   void startSessionCacheRefreshTimer() {
     _sessionCacheRefreshTimer?.cancel();
-    print('⏰ [SessionCache] Starting 5-minute auto-refresh timer');
     _sessionCacheRefreshTimer = Timer.periodic(
       const Duration(minutes: 5),
       (_) {
-        print('🔄 [SessionCache] 5-minute refresh cycle triggered');
         _getSessionResponseWithCache().catchError((_) {});
       },
     );
@@ -190,7 +183,6 @@ class ChatApiService {
       final user = response?.user?.trim().toLowerCase();
       return response?.authenticated == true && (user?.isNotEmpty ?? false) ? user : null;
     } catch (e) {
-      print('❌ [SessionCache] getSessionUser error: $e');
       _client.clearCsrfToken();
       return null;
     }
@@ -208,7 +200,6 @@ class ChatApiService {
         return null;
       }
     } catch (e) {
-      print('❌ [SessionCache] getSessionInfo error: $e');
       _client.clearCsrfToken();
       return null;
     }
@@ -231,7 +222,6 @@ class ChatApiService {
     
     for (int attempt = 1; attempt <= maxRetries + 1; attempt++) {
       try {
-        print('📱 [OTP] Requesting SMS code for phone: $normalized (attempt $attempt/${maxRetries + 1})');
         final response = await _client.post<Map<String, dynamic>>(
           ApiEndpoints.requestCode,
           data: {'user': normalized},
@@ -248,12 +238,10 @@ class ChatApiService {
               const RetryOptions(retries: 0, timeout: NetworkTimeouts.requestCodeTimeout),
         );
 
-        print('📱 [OTP] Response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
         
         if (!response.isSuccessful) {
           final body = _coerceJsonMap(response.data);
           final message = _extractErrorMessage(body, '');
-          print('❌ [OTP] Request failed - Status: ${response.statusCode}, Message: $message');
 
           // Handle specific error codes
           if (response.statusCode == 400) {
@@ -270,12 +258,10 @@ class ChatApiService {
           } else if (response.statusCode == 503) {
             // Service Unavailable - server is overloaded
             // Don't retry - inform user to try later
-            print('🔴 [OTP] Server overloaded (503) - not retrying');
             throw AuthException('השרת עומס כרגע. בחר שוב בעוד כמה רגעים');
           } else if (response.statusCode! >= 500) {
             // Other server errors (500, 502, 504, etc.)
             // Don't retry these - they indicate server issues
-            print('🔴 [OTP] Server error ${response.statusCode} - not retrying');
             throw AuthException('בעיה בשרת. אנא נסה שוב מאוחר יותר');
           } else if (message.isNotEmpty) {
             throw AuthException(message);
@@ -285,24 +271,19 @@ class ChatApiService {
 
         final body = SessionResponse.fromJson(_coerceJsonMap(response.data));
         final expiresInSeconds = body.expiresInSeconds ?? 300;
-        print('✅ [OTP] SMS code requested successfully, expires in: $expiresInSeconds seconds');
         return expiresInSeconds > 0 ? expiresInSeconds : 300;
       } on TimeoutException catch (e) {
-        print('⏱️  [OTP] Request timeout on attempt $attempt/${maxRetries + 1}: $e');
         if (attempt <= maxRetries) {
-          print('⏱️  [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
           await Future.delayed(delayBetweenRetries);
           delayBetweenRetries *= 2; // Exponential backoff
           continue;
         }
         throw AuthException('השרת לא הגיב בזמן. נסה שוב');
       } on DioException catch (e) {
-        print('🌐 [OTP] Dio error on attempt $attempt/${maxRetries + 1}: ${e.type}, Status: ${e.response?.statusCode}');
         
         // Don't retry on response errors (4xx, 5xx)
         if (e.response != null && e.response!.statusCode! >= 400) {
           final message = _extractErrorMessage(e.response?.data, '');
-          print('🔴 [OTP] HTTP ${e.response!.statusCode} - not retrying');
           throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
         }
         
@@ -312,7 +293,6 @@ class ChatApiService {
              e.type == DioExceptionType.receiveTimeout ||
              e.type == DioExceptionType.sendTimeout ||
              e.type == DioExceptionType.unknown)) {
-          print('🌐 [OTP] Retrying due to network error after ${delayBetweenRetries.inSeconds}s...');
           await Future.delayed(delayBetweenRetries);
           delayBetweenRetries *= 2; // Exponential backoff
           continue;
@@ -321,9 +301,7 @@ class ChatApiService {
         final message = _extractErrorMessage(e.response?.data, '');
         throw AuthException(message.isNotEmpty ? message : 'שליחת קוד אימות נכשלה');
       } catch (error, stackTrace) {
-        print('❌ [OTP] Error on attempt $attempt/${maxRetries + 1}: $error');
         if (attempt <= maxRetries && error is! AuthException && error is! RateLimitException) {
-          print('❌ [OTP] Retrying after ${delayBetweenRetries.inSeconds}s...');
           await Future.delayed(delayBetweenRetries);
           delayBetweenRetries *= 2; // Exponential backoff
           continue;
@@ -353,7 +331,6 @@ class ChatApiService {
     }
 
     try {
-      print('📱 [OTP] Verifying code for phone: $normalized');
       // The backend holds this request open for up to ~45 s while it waits for
       // an external service to set the user's final Status, so allow plenty of
       // headroom and do not retry (a retry here would double the wait).
@@ -367,12 +344,10 @@ class ChatApiService {
         retryOptions: const RetryOptions(retries: 0, timeout: NetworkTimeouts.verifyCodeTimeout),
       );
 
-      print('📱 [OTP] Verify response status: ${response.statusCode}, isSuccessful: ${response.isSuccessful}');
 
       if (!response.isSuccessful) {
         final body = response.data;
         final message = (body?['message'] ?? body?['error'] ?? '').toString().trim();
-        print('❌ [OTP] Verify failed - Status: ${response.statusCode}, Message: $message');
 
         if (response.statusCode == 400) {
           throw AuthException('קוד אימות לא תקין');
@@ -398,13 +373,10 @@ class ChatApiService {
         throw AuthException('אימות הקוד נכשל');
       }
 
-      print('✅ [OTP] Code verified successfully for: $sessionUser');
       return sessionUser!;
     } on DioException catch (e) {
-      print('🌐 [OTP] Dio error on verify: ${e.type}, Status: ${e.response?.statusCode}');
       throw AuthException('אימות הקוד נכשל');
     } catch (e) {
-      print('❌ [OTP] Unexpected error on verify: $e');
       throw AuthException('אימות הקוד נכשל');
     }
   }
@@ -715,29 +687,32 @@ class ChatApiService {
     return messages.map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>)).toList();
   }
 
-  Future<List<IncomingServerMessage>> syncChat({
+  /// Fetches one page of history older than [beforeTimestamp] for a chat room
+  /// from `/messages/sync` (used when scrolling back past the local history).
+  Future<List<IncomingServerMessage>> fetchOlderChatMessages({
+    required String user,
     required String chatId,
-    required int sincePts,
-    String? user,
-    int limit = 100,
+    required int beforeTimestamp,
+    int limit = 20,
   }) async {
-    final response = await _client.get<Map<String, dynamic>>(
+    final response = await _client.post<Map<String, dynamic>>(
       ApiEndpoints.chatSync,
-      queryParameters: {
+      data: {
+        'user': user.trim().toLowerCase(),
+        'last_sync_timestamp': 0,
         'chat_id': chatId,
-        'since_pts': sincePts,
-        'limit': limit.clamp(1, 500),
-        if (user != null && user.trim().isNotEmpty) 'user': user.trim().toLowerCase(),
+        'before_timestamp': beforeTimestamp,
+        'limit': limit,
       },
       retryOptions: const RetryOptions(retries: 1, timeout: Duration(seconds: 15)),
     );
-    if (!response.isSuccessful) {
-      throw ApiException('Chat sync failed with ${response.statusCode}');
+    if (!response.isSuccessful || response.data == null) {
+      throw ApiException('Older messages request failed with ${response.statusCode}');
     }
-
-    final messages = (response.data?['messages'] as List?) ?? [];
+    final messages = (response.data!['messages'] as List?) ?? const [];
     return messages
-        .map((item) => IncomingServerMessage.fromJson(item as Map<String, dynamic>))
+        .whereType<Map>()
+        .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
         .toList();
   }
 

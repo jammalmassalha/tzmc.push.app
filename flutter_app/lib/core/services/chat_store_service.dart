@@ -34,6 +34,14 @@ const int gapAnalysisCooldownMs = 30000;
 /// Max messages to keep per chat
 const int maxMessagesPerChat = 500;
 
+/// Payloads larger than this are parsed in a background isolate.
+const int _kOffThreadParseThreshold = 50;
+
+List<IncomingServerMessage> _parseIncomingMessagesSync(List<dynamic> raw) => raw
+    .whereType<Map>()
+    .map((m) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(m)))
+    .toList();
+
 /// Message types that must be treated as actions instead of regular bubbles
 /// when importing server history during sync.
 const Set<String> _kImportedActionTypes = {
@@ -206,13 +214,13 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
-    Contact? contactFor(String username) {
-      final normalized = username.trim().toLowerCase();
-      for (final entry in contacts.entries) {
-        if (entry.key.trim().toLowerCase() == normalized) return entry.value;
-      }
-      return null;
+    // Index contacts once; a linear scan per chat made the list O(chats x contacts).
+    final contactsByKey = <String, Contact>{};
+    for (final entry in contacts.entries) {
+      contactsByKey.putIfAbsent(entry.key.trim().toLowerCase(), () => entry.value);
     }
+    Contact? contactFor(String username) =>
+        contactsByKey[username.trim().toLowerCase()];
 
     if (isRestricted) {
       // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
@@ -511,17 +519,38 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     final normalized = <String, List<ChatMessage>>{};
     for (final entry in messagesByChat.entries) {
       final chatId = normalizeChatId(entry.key);
+
+      // Fast path: an already-normalized, duplicate-free chat keeps its list
+      // identity, so selectors/widgets watching it are not invalidated.
+      if (chatId == entry.key && !normalized.containsKey(chatId)) {
+        final seen = <String>{};
+        var clean = true;
+        for (final message in entry.value) {
+          if (message.chatId != chatId || !seen.add(_messageDedupKey(message))) {
+            clean = false;
+            break;
+          }
+        }
+        if (clean) {
+          normalized[chatId] = entry.value;
+          continue;
+        }
+      }
+
       final chatMessages = normalized.putIfAbsent(chatId, () => <ChatMessage>[]);
+      final indexByKey = <String, int>{
+        for (var i = 0; i < chatMessages.length; i++) _messageDedupKey(chatMessages[i]): i,
+      };
       for (final message in entry.value) {
         final normalizedMessage =
             message.chatId == chatId ? message : message.copyWith(chatId: chatId);
-        final existingIndex = chatMessages.indexWhere(
-          (existing) => _messageDedupKey(existing) == _messageDedupKey(normalizedMessage),
-        );
+        final key = _messageDedupKey(normalizedMessage);
+        final existingIndex = indexByKey[key] ?? -1;
         if (existingIndex >= 0) {
           chatMessages[existingIndex] =
               _hydrateExistingMessage(chatMessages[existingIndex], normalizedMessage);
         } else {
+          indexByKey[key] = chatMessages.length;
           chatMessages.add(normalizedMessage);
         }
       }
@@ -662,13 +691,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   }
 
+  /// Parses raw sync JSON into models. Large payloads (full sync / deltas) are
+  /// decoded in a background isolate so the UI thread never skips frames; the
+  /// caller only emits state after the result is back. (On web `compute` runs
+  /// inline, which is still correct.)
+  Future<List<IncomingServerMessage>> _parseIncomingOffThread(List<dynamic> raw) async {
+    if (raw.length < _kOffThreadParseThreshold) return _parseIncomingMessagesSync(raw);
+    try {
+      return await compute(_parseIncomingMessagesSync, raw);
+    } catch (_) {
+      return _parseIncomingMessagesSync(raw);
+    }
+  }
+
   Future<void> _applyHydrationMessages(List<dynamic> rawMessages) async {
     if (rawMessages.isEmpty) return;
 
-    final importedMessages = rawMessages
-        .whereType<Map>()
-        .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-        .toList();
+    final importedMessages = await _parseIncomingOffThread(rawMessages);
     await _applyImportedMessages(importedMessages);
   }
 
@@ -790,6 +829,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
+    // Let the loading banner paint before any sync work starts, so the
+    // spinner animates instead of freezing behind the first heavy step.
+    await Future<void>.delayed(const Duration(milliseconds: 16));
     
     // Check for first load or hard reload and force full sync
     final user = _currentUser;
@@ -800,19 +842,24 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       if (isFirst || isWebReload) {
         await _forceFullSync(user);
         if (isFirst) {
-          print('🚀 [Sync] First load detected - forcing full sync for user: $user');
         } else if (isWebReload) {
-          print('🔄 [Sync] Web hard reload detected - forcing full sync for user: $user');
         }
       }
     }
     
-    debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $_syncCursorMs');
+    // Startup state is not hydrated from the local cache, so a delta request
+    // would return only messages newer than the cursor and leave the chat
+    // list incomplete. Request the full history whenever nothing is in memory.
+    final hasInMemoryMessages =
+        state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+    final startupSyncTimestamp = hasInMemoryMessages ? _syncCursorMs : 0;
+    debugPrint('[SYNC-PIPELINE] Starting sync with lastSyncTimestamp: $startupSyncTimestamp');
+    var hydratedFromServer = false;
     try {
       try {
         final hydration = await _api.syncChatsAndMessages(
           user: _currentUser!,
-          lastSyncTimestamp: _syncCursorMs,
+          lastSyncTimestamp: startupSyncTimestamp,
         );
         final hydrationMessages = hydration.messages;
         final hydrationChats = hydration.chats;
@@ -833,7 +880,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // rendered from Riverpod state. Apply the same response in memory too;
         // otherwise a fresh install sees an empty list until a later poll even
         // though the database already contains the user's chats.
+        // Yield a frame between the DB write and the in-memory merge so the UI
+        // keeps animating while hydration completes.
+        await Future<void>.delayed(Duration.zero);
         await _applyHydrationMessages(hydrationMessages);
+        hydratedFromServer = true;
         final nextCursor = hydration.nextSyncTimestamp;
         if (nextCursor > _syncCursorMs) {
           _syncCursorMs = nextCursor;
@@ -867,7 +918,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // this point, which advances _lastGapAnalysisTime.  Without force the
       // cooldown would silently skip the initial pull and leave the chat list
       // empty until the next poll tick (≥15 s).
-      await recoverMissedMessages(force: true);
+      // The hydration request above already downloaded the same history, so
+      // only repeat the (heavy) recovery pull when it failed.
+      if (!hydratedFromServer) {
+        await recoverMissedMessages(force: true);
+      }
 
       // 4. Consume the pending sync floor; message and unread data come from
       // the server response rather than local notification storage.
@@ -1338,10 +1393,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> loadChatHistory(String chatId) async {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
+    // Realtime transport already delivers new messages while the app is open,
+    // so re-pulling on every chat open only adds network and state churn that
+    // makes opening a chat feel frozen. Throttle the pull per chat.
+    final key = normalizeChatId(chatId);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastChatHistoryPullMs[key] ?? 0;
+    if (now - last < 60000) return;
+    _lastChatHistoryPullMs[key] = now;
     // Use incremental sync to fetch only new messages since the last sync cursor.
     final since = await _resolveSyncCursor();
     await pullMessages(since: since);
   }
+
+  final Map<String, int> _lastChatHistoryPullMs = {};
 
   /// PHASE 8: Load cached messages from SQLite for instant UI display.
   ///
@@ -1422,12 +1487,28 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         '📱🔄 [ChatStoreService] Loading older messages for $chatId before $beforeTimestamp',
       );
 
-      // Fetch older messages from database (up to 50 older messages before this timestamp)
+      // Fetch older messages from database (up to 20 older messages before this timestamp)
       final olderMessages = await _db.getOlderMessages(
         chatId: normalizeChatId(chatId),
         beforeTimestamp: beforeTimestamp,
-        limit: 50,
+        limit: 20,
       );
+
+      if (olderMessages.isEmpty) {
+        // Local history exhausted: fetch the next page from the server.
+        final fetched = await _api.fetchOlderChatMessages(
+          user: user,
+          chatId: normalizeChatId(chatId),
+          beforeTimestamp: beforeTimestamp,
+          limit: 20,
+        );
+        if (fetched.isEmpty) return 0;
+        final before = state.messagesByChat[normalizeChatId(chatId)]?.length ?? 0;
+        await _applyImportedMessages(fetched);
+        _schedulePersistence();
+        final after = state.messagesByChat[normalizeChatId(chatId)]?.length ?? 0;
+        return after > before ? after - before : 0;
+      }
 
       if (olderMessages.isEmpty) {
         debugPrint(
@@ -1510,7 +1591,13 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         latestTimestamp = await _resolveSyncCursor();
       }
 
-      if (latestTimestamp <= 0) return;
+      // A zero cursor with nothing in memory means the startup full sync did
+      // not deliver any history (e.g. first request failed right after a fresh
+      // install). Retry it as a full sync instead of silently doing nothing,
+      // otherwise the chat list stays empty until the app is reinstalled.
+      final needsFullSync = latestTimestamp <= 0 &&
+          !state.messagesByChat.values.any((messages) => messages.isNotEmpty);
+      if (latestTimestamp <= 0 && !needsFullSync) return;
 
       final syncResult = await _api.syncChatsAndMessages(
         user: user,
@@ -1531,16 +1618,31 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           debugPrint('[PULL] DB syncOneToOne failed: $dbError');
         }
 
-        final normalizedMessages = newMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        final normalizedMessages = await _parseIncomingOffThread(newMessages);
+
+        if (needsFullSync) {
+          await _applyImportedMessages(normalizedMessages);
+          state = state.copyWith(unreadByChat: const {});
+          if (syncResult.nextSyncTimestamp > _syncCursorMs) {
+            _syncCursorMs = syncResult.nextSyncTimestamp;
+            await _writeSyncCursor(user);
+          }
+          _schedulePersistence();
+          return;
+        }
 
         // Route each message through the same handler used by realtime transport
         // so that action payloads (read-receipt, delete-action, etc.) are handled
         // correctly and regular messages are applied to the chat store.
-        for (final message in normalizedMessages) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
+        // Batch the delta: text messages are merged and emitted once (instead of
+        // one state emission per message); unread badges are updated in a
+        // single emission too. Action payloads keep their dedicated handlers.
+        if (normalizedMessages.length > 1) {
+          _applyDeltaBatch(normalizedMessages);
+        } else {
+          for (final message in normalizedMessages) {
+            _handleServerMessage(_normalizeLogMessageForImport(message));
+          }
         }
 
         if (syncResult.nextSyncTimestamp > _syncCursorMs) {
@@ -1555,6 +1657,42 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       debugPrint('[PULL] pullMessages failed: $e');
     } finally {
       _isPullingMessages = false;
+    }
+  }
+
+  /// Applies a delta of server messages with a single state emission for the
+  /// text messages and a single emission for the unread badges.
+  void _applyDeltaBatch(List<IncomingServerMessage> raw) {
+    final prepared = _prepareImportedMessages(raw);
+
+    final knownIds = <String>{
+      for (final messages in state.messagesByChat.values)
+        for (final m in messages) m.messageId,
+    };
+    final isAppForeground =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    final activeChatId = normalizeChatId(state.currentChatId ?? '');
+    final unreadIncrements = <String, int>{};
+    for (final m in prepared.textMessages) {
+      if (m.messageId.isEmpty || knownIds.contains(m.messageId)) continue;
+      if (m.direction != MessageDirection.incoming) continue;
+      final chatId = normalizeChatId(m.chatId);
+      if (chatId == activeChatId && isAppForeground) continue;
+      unreadIncrements[chatId] = (unreadIncrements[chatId] ?? 0) + 1;
+    }
+
+    if (prepared.textMessages.isNotEmpty) {
+      _applyMessagesBatch(prepared.textMessages);
+    }
+    if (unreadIncrements.isNotEmpty) {
+      final newUnread = Map<String, int>.from(state.unreadByChat);
+      unreadIncrements.forEach((chatId, count) {
+        newUnread[chatId] = (newUnread[chatId] ?? 0) + count;
+      });
+      state = state.copyWith(unreadByChat: newUnread);
+    }
+    for (final msg in prepared.actionMessages) {
+      _handleServerMessage(msg);
     }
   }
 
@@ -1634,10 +1772,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             debugPrint('[GAP-RECOVERY] DB sync failed: $e');
           }
 
-          final normalized = messages
-              .whereType<Map>()
-              .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-              .toList();
+          final normalized = await _parseIncomingOffThread(messages);
 
           if (normalized.isNotEmpty) {
             await _applyImportedMessages(normalized);
@@ -1756,6 +1891,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncProgressLabel: 'סנכרון כל השיחות וההודעות...',
       );
       List<dynamic> syncedChats = const [];
+      List<dynamic> rawSyncedMessages = const [];
       List<IncomingServerMessage> normalizedSyncedMessages = const [];
       try {
         final chatSync = await _api.syncChatsAndMessages(
@@ -1764,10 +1900,8 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         );
         syncedChats = chatSync.chats;
         final syncedMessages = chatSync.messages;
-        normalizedSyncedMessages = syncedMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        rawSyncedMessages = syncedMessages;
+        normalizedSyncedMessages = await _parseIncomingOffThread(syncedMessages);
 
         if (chatSync.nextSyncTimestamp > _syncCursorMs) {
           _syncCursorMs = chatSync.nextSyncTimestamp;
@@ -1789,11 +1923,11 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // Polling failures are non-fatal; syncChatsAndMessages covers history.
       }
 
-      if (syncedChats.isNotEmpty) {
+      if (syncedChats.isNotEmpty || rawSyncedMessages.isNotEmpty) {
         try {
           await _db.syncOneToOne(
             chats: syncedChats,
-            messages: const [],
+            messages: rawSyncedMessages,
             currentUserId: user,
           );
         } catch (e) {
@@ -2129,6 +2263,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     final newMessagesByChat =
         _normalizeMessagesByChatMap(state.messagesByChat);
+    final touchedChatIds = <String>{};
 
     for (final message in messages) {
       final chatId = normalizeChatId(message.chatId);
@@ -2151,14 +2286,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
 
       newMessagesByChat[chatId] = chatMessages;
+      touchedChatIds.add(chatId);
     }
 
-    // Sort each chat descending by timestamp and trim to the per-chat cap.
-    for (final entry in newMessagesByChat.entries) {
-      final msgs = entry.value;
+    // Sort only the chats that changed (descending by timestamp) and trim to
+    // the per-chat cap; untouched chats keep their identity.
+    for (final chatId in touchedChatIds) {
+      final msgs = newMessagesByChat[chatId]!;
       msgs.sort(compareMessagesBySentTimeDesc);
       if (msgs.length > maxMessagesPerChat) {
-        newMessagesByChat[entry.key] = msgs.sublist(0, maxMessagesPerChat);
+        newMessagesByChat[chatId] = msgs.sublist(0, maxMessagesPerChat);
       }
     }
 
@@ -3517,8 +3654,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     try {
       final messages = state.messagesByChat[normalizedChatId] ?? const <ChatMessage>[];
+      final messageIdSet = messageIds.toSet();
       final readUpToPts = messages
-          .where((message) => messageIds.contains(message.messageId))
+          .where((message) => messageIdSet.contains(message.messageId))
           .map((message) => message.pts ?? 0)
           .fold<int>(0, (maxPts, pts) => pts > maxPts ? pts : maxPts);
       unawaited(_transport.emitWithAck('message:ack_read', {
@@ -3821,7 +3959,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
      // Scan only recent outgoing messages (chatMessages are sorted newest-first
      // by _applyIncomingMessage), bailing out as soon as we step outside the
      // 30s dedup window so the lookup stays O(k) instead of O(n) on long chats.
-     final existing = _normalizeMessagesByChatMap(state.messagesByChat)[chatId] ?? const <ChatMessage>[];
+     final existing = state.messagesByChat[chatId] ?? const <ChatMessage>[];
      bool hasOptimisticEcho = false;
      final trimmedBody = body.trim();
      for (final m in existing) {
@@ -4168,13 +4306,15 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           debugPrint('[RECONNECT-SYNC] DB syncOneToOne failed: $dbError');
         }
 
-        final normalized = newMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        final normalized = await _parseIncomingOffThread(newMessages);
 
-        for (final message in normalized) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
+        // One batched state emission for the whole delta.
+        if (normalized.length > 1) {
+          _applyDeltaBatch(normalized);
+        } else {
+          for (final message in normalized) {
+            _handleServerMessage(_normalizeLogMessageForImport(message));
+          }
         }
 
         if (syncResult.nextSyncTimestamp > _syncCursorMs) {
@@ -4186,29 +4326,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
     } catch (e) {
       debugPrint('[RECONNECT-SYNC] Reconnection sync failed: $e');
-    }
-
-    await _syncKnownChats();
-  }
-
-  Future<void> _syncKnownChats() async {
-    final user = _currentUser;
-    if (user == null || user.isEmpty) return;
-    final chatIds = state.messagesByChat.keys.toList(growable: false);
-    for (final chatId in chatIds) {
-      try {
-        final sincePts = await _db.getHighestPts(chatId);
-        final diff = await _api.syncChat(
-          chatId: chatId,
-          sincePts: sincePts,
-          user: user,
-        );
-        for (final message in diff) {
-          _handleServerMessage(_normalizeLogMessageForImport(message));
-        }
-      } catch (_) {
-        // The existing recovery path remains available on the next poll tick.
-      }
     }
   }
 
@@ -4348,10 +4465,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       }
       
       final messageCount = state.messagesByChat.values.fold(0, (sum, msgs) => sum + msgs.length);
-      print('📊 [PersistState] Starting persistence for user: $user');
-      print('📊 [PersistState] Messages in state: $messageCount');
-      print('📊 [PersistState] Contacts: ${state.contacts.length}');
-      print('📊 [PersistState] Groups: ${state.groups.length}');
       
       final snapshot = PersistedChatState(
         contacts: state.contacts.values.toList(),
@@ -4362,20 +4475,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
       try {
         await _db.persistState(snapshot);
-        print('✅ [PersistState] Successfully persisted to Drift database');
       } catch (e) {
-        print('❌ [PersistState] Drift DB error: $e');
         // Drift DB unavailable (e.g. web without sqlite3.wasm).
         // Fall back to shared_preferences-based localStorage snapshot.
         if (kIsWeb) {
           await WebChatStorage.persistState(user, snapshot);
-          print('✅ [PersistState] Fell back to WebStorage');
         }
       }
       await _writeDeletedChats(user, state.deletedChats);
       await _writeSyncCursor(user);
     } catch (e) {
-      print('❌ [PersistState] Error: $e');
       // Persistence failure is non-fatal – data remains available in memory
       // for the current session and will be retried on the next trigger.
     }
@@ -4429,7 +4538,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       final syncCursor = await _readSyncCursor(user);
       final isFirst = syncCursor == 0;
       if (isFirst) {
-        print('🚀 [FirstLoad] Detected first load for user: $user - forcing full sync');
       }
       return isFirst;
     } catch (_) {
@@ -4452,7 +4560,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // If no previous session ID, this is either first load or hard reload
       if (lastSessionId == null) {
         await prefs.setString(hardReloadKey, newSessionId);
-        print('🔄 [WebHardReload] Detected web hard reload - resetting sync cursor');
         return true;
       }
       
@@ -4468,7 +4575,6 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   /// Force full sync by resetting the sync cursor to 0.
   /// Called on first load or hard reload to ensure complete data sync.
   Future<void> _forceFullSync(String user) async {
-    print('💾 [ForceFullSync] Resetting sync cursor to 0 for full sync');
     _syncCursorMs = 0;
     await _clearSyncCursor(user);
   }

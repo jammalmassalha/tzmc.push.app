@@ -1828,6 +1828,7 @@ final pushNotificationServiceProvider = Provider<PushNotificationService>((
 /// already in the local database and can be displayed instantly.
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  debugPrint = (String? message, {int? wrapWidth}) {};
   WidgetsFlutterBinding.ensureInitialized();
   try {
     // Initialize Firebase before touching any other plugin in this isolate.

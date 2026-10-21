@@ -145,7 +145,7 @@ jobs:
 
       - name: Build Web
         run: |
-          flutter build web --release --base-href /notify/ --pwa-strategy=none
+          flutter build web --release --base-href /fluttertest/ --pwa-strategy=none
           mkdir -p ../dist
           cp -r build/web ../dist/web
 

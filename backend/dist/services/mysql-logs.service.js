@@ -2067,6 +2067,16 @@ class MysqlLogsService {
                 sql += ` AND \`ActionTimestamp\` > ?`;
                 params.push(sinceTimestamp);
             }
+            const beforeTimestamp = Number(options.beforeTimestamp) || 0;
+            if (beforeTimestamp > 0) {
+                sql += ` AND \`ActionTimestamp\` < ?`;
+                params.push(beforeTimestamp);
+            }
+            const chatFilter = toTrimmedString(options.chatId);
+            if (chatFilter) {
+                sql += ` AND (\`GroupId\` = ? OR ((\`GroupId\` IS NULL OR \`GroupId\` = '') AND (\`Sender\` = ? OR \`Recipient\` = ?)))`;
+                params.push(chatFilter, chatFilter, chatFilter);
+            }
             if (includeMessages) {
                 // Full-sync mode paginates newest-first to mirror the historical Logs-table paging.
                 // Secondary `Id` key keeps the order strictly monotonic and stable —
@@ -2742,6 +2752,7 @@ class MysqlLogsService {
                     username: user,
                     displayName: finalName !== '' ? finalName : user,
                     fullName: finalName,
+                    exceptionName: nameColI,
                     upic: upic,
                     status: normalizedStatus
                 });

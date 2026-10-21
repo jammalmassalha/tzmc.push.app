@@ -2442,6 +2442,63 @@ async function sendBotMessage(fromUser, toUser, bodyText, fromName) {
     await sendPushNotificationToUser([toUser], notificationData, fromUser, { messageId: botMessageId });
 }
 
+// Strip role/department metadata, e.g. "תמר קורן (משאבי אנוש)" -> "תמר קורן".
+function cleanDisplayName(value) {
+    const text = String(value == null ? '' : value);
+    const idx = text.indexOf('(');
+    return (idx >= 0 ? text.slice(0, idx) : text).trim();
+}
+
+let contactNameCache = { at: 0, map: new Map() };
+async function resolveContactDisplayName(user) {
+    const key = String(user || '').trim();
+    if (!key) return '';
+    try {
+        if (Date.now() - contactNameCache.at > 5 * 60 * 1000) {
+            const contacts = await mysqlLogsService.getContacts();
+            const map = new Map();
+            for (const c of contacts || []) {
+                // Name priority: ExeptionName first, then FullName.
+                const name = cleanDisplayName(c.exceptionName) || cleanDisplayName(c.fullName);
+                if (c.username && name) map.set(String(c.username).trim(), name);
+            }
+            contactNameCache = { at: Date.now(), map };
+        }
+        return contactNameCache.map.get(key) || '';
+    } catch (_e) {
+        return '';
+    }
+}
+
+let groupNameCache = { at: 0, map: new Map() };
+// Resolve a group's real name from ChatGroups, then CommunityGroups.
+async function resolveGroupDisplayName(groupId) {
+    const key = normalizeUserKey(groupId);
+    if (!key) return '';
+    try {
+        if (Date.now() - groupNameCache.at > 5 * 60 * 1000) {
+            const map = new Map();
+            const [communityGroups, chatGroups] = await Promise.all([
+                mysqlLogsService.loadCommunityGroups().catch(() => []),
+                mysqlLogsService.loadAllChatGroups().catch(() => [])
+            ]);
+            for (const g of communityGroups || []) {
+                const k = normalizeUserKey(g.groupId);
+                if (k && g.groupName) map.set(k, String(g.groupName).trim());
+            }
+            // ChatGroups take precedence over CommunityGroups.
+            for (const g of chatGroups || []) {
+                const k = normalizeUserKey(g.groupId);
+                if (k && g.groupName) map.set(k, String(g.groupName).trim());
+            }
+            groupNameCache = { at: Date.now(), map };
+        }
+        return groupNameCache.map.get(key) || '';
+    } catch (_e) {
+        return '';
+    }
+}
+
 async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
     const {
         reply,
@@ -2800,8 +2857,24 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         }, { timeoutMs: 10000, retries: 2 }).catch(err => console.error('[SHEET ERROR] Failed to save reply:', err.message));
 
         const isGroup = Boolean(groupId);
-        const senderLabel = groupSenderName || senderName || user;
-        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        let resolvedSenderName = cleanDisplayName(senderName);
+        // Clients may send the phone number (or nothing) as the sender name;
+        // resolve the real display name so direct-chat titles show a name.
+        if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
+            resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
+        }
+        // Group sender: prefer Subscribe (ExeptionName, then FullName) so the
+        // subtitle names the individual sender; fall back to client-supplied labels.
+        if (isGroup && !resolvedSenderName) {
+            resolvedSenderName = await resolveContactDisplayName(user);
+        }
+        const senderLabel = (isGroup ? (await resolveContactDisplayName(user)) : '')
+            || cleanDisplayName(groupSenderName) || resolvedSenderName || user;
+        let normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        if (isGroup) {
+            // Prefer the stored group name; keep client name, then the group id, as fallbacks.
+            normalizedGroupName = (await resolveGroupDisplayName(groupId)) || normalizedGroupName || String(groupId);
+        }
         const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
         // so the popup notification shows who sent the message in the group
@@ -6755,6 +6828,19 @@ registerFlutterPushRoutes(app, {
 });
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
+    // Safety net: never show a raw phone number as the title when the sender
+    // has a name in Subscribe (ExeptionName, then FullName, cleaned).
+    try {
+        if (message && typeof message === 'object' && senderuser) {
+            const title = String(message.title || '').trim();
+            const digits = title.replace(/[\s+\-()]/g, '');
+            const senderDigits = String(senderuser).replace(/[\s+\-()]/g, '');
+            if (title && /^\d{7,}$/.test(digits) && digits === senderDigits) {
+                const friendly = await resolveContactDisplayName(senderuser);
+                if (friendly) message = { ...message, title: friendly };
+            }
+        }
+    } catch (_e) { /* keep original title */ }
     // Fire-and-forget fan-out to Flutter FCM tokens immediately, WITHOUT waiting
     // for the web-push pipeline. The web-push pipeline may block for several
     // seconds (or up to ~1 minute) while it looks up subscriptions from Google
@@ -9063,9 +9149,10 @@ async function checkOutgoingQueue() {
                     continue;
                 }
 
+                const queueSenderLabel = (await resolveContactDisplayName(senderName)) || senderName;
                 const notificationData = {
                     messageId,
-                    title: `Message from ${senderName}`,
+                    title: `Message from ${queueSenderLabel}`,
                     body: {
                         shortText: bodyText,
                         longText: bodyText

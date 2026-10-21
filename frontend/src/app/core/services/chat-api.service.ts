@@ -649,21 +649,36 @@ export class ChatApiService {
     const normalizedUser = String(user || '').trim().toLowerCase();
     if (!normalizedUser) return [];
   
-    const safeLimit = Math.min(200000, Math.max(1, Math.floor(limit)));
+    const safeLimit = Math.min(1000, Math.max(1, Math.floor(limit)));
     const safeOffset = Math.max(0, Math.floor(offset));
-    
-    // Append &since=${since} to the URL
-    const url = `${this.notifyBaseUrl}/messages/logs?user=${encodeURIComponent(normalizedUser)}&excludeSystem=1&limit=${safeLimit}&offset=${safeOffset}&since=${since}&_ts=${Date.now()}`;
-    
+    const safeSince = Math.max(0, Math.floor(Number(since) || 0));
+    // A full sync (since = 0) returns the complete history in a single response,
+    // so there are no further pages.
+    if (safeSince === 0 && safeOffset > 0) return [];
+
     const response = await this.fetchWithRetry(
-      url,
-      { cache: 'no-store' },
-      { retries: 1, timeoutMs: 20000, backoffMs: 500 }
+      `${this.notifyBaseUrl}/messages/sync`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({
+          user: normalizedUser,
+          last_sync_timestamp: safeSince,
+          limit: safeLimit,
+          offset: safeOffset
+        })
+      },
+      { retries: 1, timeoutMs: 60000, backoffMs: 500 }
     );
-    
-    if (!response.ok) throw new Error(`Logs request failed: ${response.status}`);
-    const body = (await response.json()) as { messages?: IncomingServerMessage[] };
-    return Array.isArray(body.messages) ? body.messages : [];
+
+    if (!response.ok) throw new Error(`Sync request failed: ${response.status}`);
+    const body = (await response.json()) as {
+      messages?: IncomingServerMessage[];
+      newMessages?: IncomingServerMessage[];
+    };
+    const list = body.messages ?? body.newMessages;
+    return Array.isArray(list) ? list : [];
   }
 
   async reportMessageReceived(msgId: string, receivedAt: number): Promise<void> {
