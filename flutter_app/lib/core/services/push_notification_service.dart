@@ -1317,21 +1317,32 @@ class PushNotificationService {
   }
 
   static bool _looksGenericNotificationText(String text) {
+    // Keep Unicode letters/digits so Hebrew (and other non-Latin) text is not
+    // mistaken for an empty/generic string.
     final normalized = text
         .trim()
         .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
         .trim();
-    return normalized.isEmpty ||
-        const {
-          'new notification',
-          'new message',
-          'new alert',
-          'work alert',
-          'worker alert',
-          'alert',
-          'message',
-        }.contains(normalized);
+    if (normalized.isEmpty) return true;
+    const generic = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+      'הודעה חדשה',
+      'התראה חדשה',
+      'הודעה',
+      'התראה',
+    };
+    if (generic.contains(normalized)) return true;
+    // Placeholders such as "New message: <sender>" / "הודעה חדשה מאת <sender>".
+    return normalized.startsWith('new message ') ||
+        normalized.startsWith('new notification ') ||
+        normalized.startsWith('הודעה חדשה ');
   }
 
   static String _firstMeaningfulText(Iterable<Object?> values) {
@@ -1427,18 +1438,18 @@ class PushNotificationService {
 
   static String _resolveNotificationBody(Map<String, dynamic> data, RemoteNotification? notification) {
     final body = _firstMeaningfulText([
-      notification?.body,
       data['body'],
+      data['messageText'],
       data['shortText'],
       data['longText'],
-      data['messageText'],
       data['groupMessageText'],
+      data['text'],
+      notification?.body,
       data['locationText'],
       data['locationName'],
       data['address'],
       data['placeName'],
       data['caption'],
-      data['text'],
     ]);
     if (body.isNotEmpty) return body;
 
@@ -1456,7 +1467,7 @@ class PushNotificationService {
         data['longitude'] != null;
     if (hasLocation) return 'Location shared';
 
-    return '';
+    return 'הודעה חדשה';
   }
 
   /// Show local notification for foreground messages
@@ -1574,8 +1585,7 @@ class PushNotificationService {
           return messageText;
         } else {
           // For direct messages, use the resolved content first.
-          if (displayBody.isNotEmpty) return displayBody;
-          return '';
+          return displayBody;
         }
       })(),
       details,
