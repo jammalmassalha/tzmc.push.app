@@ -269,11 +269,8 @@ class PushNotificationService {
         if (launchDetails?.didNotificationLaunchApp == true) {
           final payload = launchDetails?.notificationResponse?.payload;
           if (payload != null && !payload.startsWith('helpdesk:')) {
-            final parts = payload.split(':');
-            if (parts.isNotEmpty) {
-              final chatId = parts[0].trim().toLowerCase();
-              if (chatId.isNotEmpty) _pendingRouteChatId = chatId;
-            }
+            final chatId = _chatIdFromNotificationPayload(payload);
+            if (chatId.isNotEmpty) _pendingRouteChatId = chatId;
           }
         }
       }
@@ -1257,6 +1254,17 @@ class PushNotificationService {
     }
   }
 
+  /// Extracts the chat id from a local-notification payload of the form
+  /// "chatId:messageId". Group ids such as "group:grp_x" contain colons, so the
+  /// message id is whatever follows the LAST colon rather than splitting on the
+  /// first one.
+  static String _chatIdFromNotificationPayload(String payload) {
+    final trimmed = payload.trim();
+    final idx = trimmed.lastIndexOf(':');
+    final chat = idx >= 0 ? trimmed.substring(0, idx) : trimmed;
+    return chat.trim().toLowerCase();
+  }
+
   /// Handle local notification tap (foreground notifications)
   void _onNotificationTapped(NotificationResponse response) {
     final payload = response.payload;
@@ -1269,10 +1277,8 @@ class PushNotificationService {
       return;
     }
 
-    // Format: "chatId:messageId"
-    final parts = payload.split(':');
-    if (parts.isEmpty) return;
-    final chatId = parts[0].trim().toLowerCase();
+    // Format: "chatId:messageId" (chatId may itself contain colons).
+    final chatId = _chatIdFromNotificationPayload(payload);
     if (chatId.isEmpty) return;
 
     debugPrint('[PushNotificationService] Local notification tapped: $chatId');
@@ -1554,7 +1560,11 @@ class PushNotificationService {
     } else {
       // Fall back to sender when chatId/groupId are absent (e.g. helpdesk_ticket messages
       // sent under 'מוקד איחוד' use the senderuser as the chatId).
-      final chatId = data['chatId'] ?? data['groupId'] ?? data['sender'] ?? '';
+      final chatId = _chatIdFromMessage(message) ??
+          data['chatId'] ??
+          data['groupId'] ??
+          data['sender'] ??
+          '';
       final messageId = data['messageId'] ?? '';
       notificationPayload = '$chatId:$messageId';
     }
@@ -1660,19 +1670,55 @@ class PushNotificationService {
     _openChatScreen(chatId);
   }
 
+  /// Resolves the chat to open for a notification payload. Groups use the
+  /// group id; direct chats resolve to the OTHER participant, because the
+  /// server's `chatId` for a direct message is the recipient (this device's
+  /// user), which would otherwise open a self-chat.
   String? _chatIdFromMessage(RemoteMessage message) {
     final data = message.data;
-    final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])
-        ?.toString()
-        .trim();
-    if (chatId == null || chatId.isEmpty) {
+    String pick(List<String> keys) {
+      for (final k in keys) {
+        final v = data[k]?.toString().trim() ?? '';
+        if (v.isNotEmpty && v.toLowerCase() != 'null') return v;
+      }
+      return '';
+    }
+
+    final groupId = pick(['groupId', 'group_id']);
+    if (groupId.isNotEmpty) return groupId.toLowerCase();
+
+    final me = _ref.read(currentUserProvider)?.toString() ?? '';
+    final candidates = <String>[
+      pick(['chatId', 'chat_id']),
+      pick(['sender', 'user', 'from', 'fromUser']),
+    ];
+    for (final c in candidates) {
+      if (c.isEmpty) continue;
+      if (me.isNotEmpty && isSameUser(c, me)) continue;
+      return c.toLowerCase();
+    }
+    // Everything resolved to the current user (or nothing): last resort so
+    // the tap is not silently dropped.
+    final fallback = candidates.firstWhere((c) => c.isNotEmpty, orElse: () => '');
+    if (fallback.isEmpty) {
       debugPrint(
         '[PUSH-ROUTING] ❌ No chat/group/sender ID in payload. Keys: ${data.keys.toList()}',
       );
       return null;
     }
-    debugPrint('[PUSH-ROUTING] 📛 Found ID: $chatId (source: ${data.containsKey('chatId') ? 'chatId' : data.containsKey('groupId') ? 'groupId' : 'sender'})');
-    return chatId.toLowerCase();
+    return fallback.toLowerCase();
+  }
+
+  int _routeRetryAttempts = 0;
+
+  /// Retries a deferred route (navigator / auth / chat store not ready yet)
+  /// a bounded number of times so a tap is never silently dropped.
+  void _scheduleRouteRetry() {
+    if (_pendingRouteChatId == null || _routeRetryAttempts >= 40) return;
+    _routeRetryAttempts++;
+    Timer(const Duration(milliseconds: 500), () {
+      if (_pendingRouteChatId != null) unawaited(completeLaunchRouting());
+    });
   }
 
   /// Replays a terminated-state route after authentication and the initial
@@ -1687,6 +1733,7 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] Launch route deferred: user is not authenticated',
         );
+        _scheduleRouteRetry();
         return;
       }
       // The push service and chat shell initialize independently. Do not invoke
@@ -1695,6 +1742,7 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] Launch route deferred: chat store is not ready',
         );
+        _scheduleRouteRetry();
         return;
       }
       await WidgetsBinding.instance.endOfFrame;
@@ -1704,6 +1752,7 @@ class PushNotificationService {
       debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
       if (_openChatScreen(chatId)) {
         _pendingRouteChatId = null;
+        _routeRetryAttempts = 0;
       } else {
         // The navigator can still be mounting while authentication and store
         // hydration complete. Try once more on the next frame.
@@ -1741,6 +1790,7 @@ class PushNotificationService {
         '[PUSH-ROUTING] ⏱️ App not fully ready, deferring route to $normalizedChatId',
       );
       _pendingRouteChatId = normalizedChatId;
+      _scheduleRouteRetry();
       return false;
     }
 
