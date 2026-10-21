@@ -2703,28 +2703,27 @@ class MysqlLogsService {
         }
     }
     async getSubscribeNameByUser(user) {
-      const key = String(user || '').trim();
-      if (!key) return '';
-      await this.ensureSubscribeTable();
-      try {
-        const [rows] = await this.pool.query(
-          'SELECT `FullName`, `ExeptionName` FROM `Subscribe` WHERE `User` = ? LIMIT 1',
-          [key]
-        );
-        if (!rows || rows.length === 0) return '';
-        const clean = (v) => {
-          const t = String(v == null ? '' : v);
-          const i = t.indexOf('(');
-          const s = (i >= 0 ? t.slice(0, i) : t).trim();
-          return s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' ? '' : s;
-        };
-        return clean(rows[0].FullName) || clean(rows[0].ExeptionName);
-      } catch (err) {
-        console.error('[MYSQL] getSubscribeNameByUser error:', String(err && err.message || ''));
-        return '';
-      }
+        const key = String(user || '').trim();
+        if (!key)
+            return '';
+        await this.ensureSubscribeTable();
+        try {
+            const [rows] = await this.pool.query('SELECT `FullName`, `ExeptionName` FROM `Subscribe` WHERE `User` = ? LIMIT 1', [key]);
+            if (!rows || rows.length === 0)
+                return '';
+            const clean = (v) => {
+                const t = String(v == null ? '' : v);
+                const i = t.indexOf('(');
+                const s = (i >= 0 ? t.slice(0, i) : t).trim();
+                return s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' ? '' : s;
+            };
+            return clean(rows[0].FullName) || clean(rows[0].ExeptionName);
+        }
+        catch (err) {
+            console.error('[MYSQL] getSubscribeNameByUser error:', String(err.message || ''));
+            return '';
+        }
     }
-
     async getContacts(requestingUser) {
         await this.ensureSubscribeTable();
         try {
