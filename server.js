@@ -2458,12 +2458,42 @@ async function resolveContactDisplayName(user) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();
             for (const c of contacts || []) {
-                const name = cleanDisplayName(c.fullName) || cleanDisplayName(c.exceptionName);
+                // Name priority: ExeptionName first, then FullName.
+                const name = cleanDisplayName(c.exceptionName) || cleanDisplayName(c.fullName);
                 if (c.username && name) map.set(String(c.username).trim(), name);
             }
             contactNameCache = { at: Date.now(), map };
         }
         return contactNameCache.map.get(key) || '';
+    } catch (_e) {
+        return '';
+    }
+}
+
+let groupNameCache = { at: 0, map: new Map() };
+// Resolve a group's real name from ChatGroups, then CommunityGroups.
+async function resolveGroupDisplayName(groupId) {
+    const key = normalizeUserKey(groupId);
+    if (!key) return '';
+    try {
+        if (Date.now() - groupNameCache.at > 5 * 60 * 1000) {
+            const map = new Map();
+            const [communityGroups, chatGroups] = await Promise.all([
+                mysqlLogsService.loadCommunityGroups().catch(() => []),
+                mysqlLogsService.loadAllChatGroups().catch(() => [])
+            ]);
+            for (const g of communityGroups || []) {
+                const k = normalizeUserKey(g.groupId);
+                if (k && g.groupName) map.set(k, String(g.groupName).trim());
+            }
+            // ChatGroups take precedence over CommunityGroups.
+            for (const g of chatGroups || []) {
+                const k = normalizeUserKey(g.groupId);
+                if (k && g.groupName) map.set(k, String(g.groupName).trim());
+            }
+            groupNameCache = { at: Date.now(), map };
+        }
+        return groupNameCache.map.get(key) || '';
     } catch (_e) {
         return '';
     }
@@ -2833,8 +2863,18 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
             resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
         }
-        const senderLabel = cleanDisplayName(groupSenderName) || resolvedSenderName || user;
-        const normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        // Group sender: prefer Subscribe (ExeptionName, then FullName) so the
+        // subtitle names the individual sender; fall back to client-supplied labels.
+        if (isGroup && !resolvedSenderName) {
+            resolvedSenderName = await resolveContactDisplayName(user);
+        }
+        const senderLabel = (isGroup ? (await resolveContactDisplayName(user)) : '')
+            || cleanDisplayName(groupSenderName) || resolvedSenderName || user;
+        let normalizedGroupName = (typeof groupName === 'string') ? groupName.trim() : groupName;
+        if (isGroup) {
+            // Prefer the stored group name; keep client name, then the group id, as fallbacks.
+            normalizedGroupName = (await resolveGroupDisplayName(groupId)) || normalizedGroupName || String(groupId);
+        }
         const messageBody = reply || (imageUrl ? 'Sent an image' : (fileUrl ? 'Sent a file' : 'New Message'));
         // For group messages, prepend sender name to the notification short text
         // so the popup notification shows who sent the message in the group
