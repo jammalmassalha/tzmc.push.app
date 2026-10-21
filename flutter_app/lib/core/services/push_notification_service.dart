@@ -1357,6 +1357,48 @@ class PushNotificationService {
     return title.isNotEmpty ? title : 'Work Alert';
   }
 
+  /// Strips role/department metadata: "name (dept)" -> "name".
+  static String _stripParenMetadata(String value) {
+    final idx = value.indexOf('(');
+    return (idx >= 0 ? value.substring(0, idx) : value).trim();
+  }
+
+  /// Resolves the title from the local Drift store: the group name for group
+  /// chats, otherwise the cleaned contact name for the sender. Keeps [fallback]
+  /// (e.g. the raw phone number) when nothing is found locally.
+  static Future<String> _resolveLocalTitle(
+    Map<String, dynamic> data,
+    String fallback,
+  ) async {
+    try {
+      final groupId = (data['groupId'] ?? '').toString().trim();
+      final isGroup = data['isGroup'] == true ||
+          data['isGroup']?.toString() == 'true' ||
+          groupId.isNotEmpty;
+      final database = ChatDatabase();
+      if (isGroup) {
+        if (groupId.isEmpty) return fallback;
+        final group = await database.getGroup(groupId);
+        final name = group?.name.trim() ?? '';
+        return name.isNotEmpty ? name : fallback;
+      }
+      final sender = (data['sender'] ?? data['user'] ?? data['chatId'] ?? '')
+          .toString()
+          .trim();
+      if (sender.isEmpty) return fallback;
+      final digits = (String v) => v.replaceAll(RegExp(r'[\s+\-()]'), '');
+      final titleIsSender = fallback.isEmpty ||
+          _looksGenericNotificationText(fallback) ||
+          digits(fallback) == digits(sender);
+      if (!titleIsSender) return fallback;
+      final contact = await database.getContact(sender);
+      final name = _stripParenMetadata(contact?.displayName ?? '');
+      return name.isNotEmpty ? name : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   static String _resolveNotificationBody(Map<String, dynamic> data, RemoteNotification? notification) {
     final body = _firstMeaningfulText([
       notification?.body,
@@ -1452,7 +1494,10 @@ class PushNotificationService {
     // so the tap handler can distinguish them from regular chat notifications.
     final data = message.data;
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
-    final displayTitle = _resolveNotificationTitle(data, notification);
+    final displayTitle = await _resolveLocalTitle(
+      data,
+      _resolveNotificationTitle(data, notification),
+    );
     final displayBody = _resolveNotificationBody(data, notification);
     final String notificationPayload;
     if (type == 'helpdesk_assigned' || type == 'helpdesk') {
