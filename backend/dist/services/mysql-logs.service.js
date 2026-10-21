@@ -2718,7 +2718,7 @@ class MysqlLogsService {
           const s = (i >= 0 ? t.slice(0, i) : t).trim();
           return s.toLowerCase() === 'undefined' || s.toLowerCase() === 'null' ? '' : s;
         };
-        return clean(rows[0].ExeptionName) || clean(rows[0].FullName);
+        return clean(rows[0].FullName) || clean(rows[0].ExeptionName);
       } catch (err) {
         console.error('[MYSQL] getSubscribeNameByUser error:', String(err && err.message || ''));
         return '';

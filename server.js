@@ -2462,8 +2462,8 @@ async function resolveContactDisplayName(user) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();
             for (const c of contacts || []) {
-                // Name priority: ExeptionName first, then FullName.
-                const name = cleanDisplayName(c.exceptionName) || cleanDisplayName(c.fullName);
+                // Name priority: FullName first, then ExeptionName.
+                const name = cleanDisplayName(c.fullName) || cleanDisplayName(c.exceptionName);
                 if (c.username && name) map.set(String(c.username).trim(), name);
             }
             contactNameCache = { at: Date.now(), map };
@@ -2867,7 +2867,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
             resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
         }
-        // Group sender: prefer Subscribe (ExeptionName, then FullName) so the
+        // Group sender: prefer Subscribe (FullName, then ExeptionName) so the
         // subtitle names the individual sender; fall back to client-supplied labels.
         if (isGroup && !resolvedSenderName) {
             resolvedSenderName = await resolveContactDisplayName(user);
@@ -6833,7 +6833,7 @@ registerFlutterPushRoutes(app, {
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
     // Safety net: never show a raw phone number as the title when the sender
-    // has a name in Subscribe (ExeptionName, then FullName, cleaned).
+    // has a name in Subscribe (FullName, then ExeptionName, cleaned).
     try {
         if (message && typeof message === 'object' && senderuser) {
             const title = String(message.title || '').trim();
