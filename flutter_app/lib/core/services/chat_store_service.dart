@@ -206,13 +206,13 @@ class ChatState {
   /// Get all chat list items sorted by last message timestamp
   List<ChatListItem> get chatListItems {
     final items = <ChatListItem>[];
-    Contact? contactFor(String username) {
-      final normalized = username.trim().toLowerCase();
-      for (final entry in contacts.entries) {
-        if (entry.key.trim().toLowerCase() == normalized) return entry.value;
-      }
-      return null;
+    // Index contacts once; a linear scan per chat made the list O(chats x contacts).
+    final contactsByKey = <String, Contact>{};
+    for (final entry in contacts.entries) {
+      contactsByKey.putIfAbsent(entry.key.trim().toLowerCase(), () => entry.value);
     }
+    Contact? contactFor(String username) =>
+        contactsByKey[username.trim().toLowerCase()];
 
     if (isRestricted) {
       // Return ALL contacts (the active secretaries returned by getContacts) EVEN if they have no messages!
