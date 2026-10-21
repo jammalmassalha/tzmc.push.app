@@ -1348,10 +1348,20 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   Future<void> loadChatHistory(String chatId) async {
     final user = _currentUser;
     if (user == null || user.isEmpty || chatId.trim().isEmpty) return;
+    // Realtime transport already delivers new messages while the app is open,
+    // so re-pulling on every chat open only adds network and state churn that
+    // makes opening a chat feel frozen. Throttle the pull per chat.
+    final key = normalizeChatId(chatId);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastChatHistoryPullMs[key] ?? 0;
+    if (now - last < 60000) return;
+    _lastChatHistoryPullMs[key] = now;
     // Use incremental sync to fetch only new messages since the last sync cursor.
     final since = await _resolveSyncCursor();
     await pullMessages(since: since);
   }
+
+  final Map<String, int> _lastChatHistoryPullMs = {};
 
   /// PHASE 8: Load cached messages from SQLite for instant UI display.
   ///
@@ -3562,8 +3572,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
     try {
       final messages = state.messagesByChat[normalizedChatId] ?? const <ChatMessage>[];
+      final messageIdSet = messageIds.toSet();
       final readUpToPts = messages
-          .where((message) => messageIds.contains(message.messageId))
+          .where((message) => messageIdSet.contains(message.messageId))
           .map((message) => message.pts ?? 0)
           .fold<int>(0, (maxPts, pts) => pts > maxPts ? pts : maxPts);
       unawaited(_transport.emitWithAck('message:ack_read', {
