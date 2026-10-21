@@ -8,7 +8,7 @@ library;
 import 'dart:convert';
 
 import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
+import 'package:flutter/foundation.dart' show compute, debugPrint, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/chat_models.dart';
@@ -471,60 +471,106 @@ class ChatDatabase extends _$ChatDatabase {
     required List<dynamic> messages,
     required String? currentUserId,
   }) async {
-    final messageRows = messages;
+    // Map/normalise the payload off the UI thread (large full syncs), then
+    // write everything in ONE transaction using batched statements.
+    final args = <String, dynamic>{
+      'chats': chats,
+      'messages': messages,
+      'user': currentUserId ?? '',
+    };
+    final prepared = (chats.length + messages.length) >= 50
+        ? await _prepareSyncOffThread(args)
+        : _prepareSyncRows(args);
+    final unread = (prepared['unread'] as Map).cast<String, int>();
+    final rows = (prepared['messages'] as List).cast<ChatMessage>();
+
     await transaction(() async {
-      for (final raw in chats) {
-        if (raw is! Map) continue;
-        final map = Map<String, dynamic>.from(raw);
-        final id = '${map['chatId'] ?? map['id'] ?? ''}'.trim();
-        if (id.isEmpty) continue;
-        await setUnreadCount(id, _syncInt(map['unreadCount']));
+      if (unread.isNotEmpty) {
+        await batch((b) {
+          unread.forEach((chatId, count) {
+            b.insert(
+              unreadCounts,
+              UnreadCountsCompanion.insert(chatId: chatId, count: count),
+              mode: InsertMode.insertOrReplace,
+            );
+          });
+        });
       }
-      for (final raw in messageRows) {
-        if (raw is! Map) continue;
-        final map = Map<String, dynamic>.from(raw);
-        final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
-        if (id.isEmpty) continue;
-        
-        final timestamp = _syncTimestamp(
-          map['timestamp'] ?? map['sentDateTime'],
-        );
-        
-        // Compute the correct chatId using resolveChatRoomId to prevent self-chats
-        // and handle messages sent to different users correctly
-        final groupId = '${map['groupId'] ?? ''}'.trim();
-        final sender = '${map['sender'] ?? map['from'] ?? ''}'.trim();
-        final recipientId = '${map['toUser'] ?? map['recipient'] ?? ''}'.trim();
-        final direction = map['direction'] ?? 'incoming';
-        
-        final chatId = resolveChatRoomId(
-          groupId: groupId.isNotEmpty ? groupId : null,
-          senderId: sender.isNotEmpty ? sender : null,
-          recipientId: groupId.isNotEmpty ? null : (recipientId.isNotEmpty ? recipientId : null),
-          currentUserId: currentUserId ?? '',
-        );
-        
-        // Skip messages that would create self-chats
-        if (chatId == null) continue;
-        
-        final messageMap = <String, dynamic>{
-          ...map,
-          'id': id,
-          'messageId': '${map['messageId'] ?? id}',
-          'chatId': chatId,
-          'sender': sender,
-          'body': '${map['body'] ?? map['message'] ?? map['content'] ?? ''}',
-          'timestamp': timestamp,
-          if (map['pts'] != null) 'pts': _syncInt(map['pts']),
-          'direction': direction,
-          'deliveryStatus':
-              map['deliveryStatus'] ?? map['status'] ?? 'delivered',
-        };
-        final message = ChatMessage.fromJson(messageMap);
-        await into(this.messages)
-            .insertOnConflictUpdate(_messageToCompanion(message));
+      if (rows.isNotEmpty) {
+        await batch((b) {
+          for (final message in rows) {
+            b.insert(
+              this.messages,
+              _messageToCompanion(message),
+              mode: InsertMode.insertOrReplace,
+            );
+          }
+        });
       }
     });
+  }
+
+  static Future<Map<String, dynamic>> _prepareSyncOffThread(
+    Map<String, dynamic> args,
+  ) async {
+    try {
+      return await compute(_prepareSyncRows, args);
+    } catch (_) {
+      return _prepareSyncRows(args);
+    }
+  }
+
+  /// Pure function (isolate-safe): converts raw sync JSON into unread counts
+  /// and ready-to-store [ChatMessage] models.
+  static Map<String, dynamic> _prepareSyncRows(Map<String, dynamic> args) {
+    final chats = args['chats'] as List;
+    final messageRows = args['messages'] as List;
+    final currentUserId = args['user'] as String;
+    final unread = <String, int>{};
+    final out = <ChatMessage>[];
+
+    for (final raw in chats) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final id = '${map['chatId'] ?? map['id'] ?? ''}'.trim();
+      if (id.isEmpty) continue;
+      unread[id] = _syncInt(map['unreadCount']);
+    }
+    for (final raw in messageRows) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final id = '${map['id'] ?? map['messageId'] ?? ''}'.trim();
+      if (id.isEmpty) continue;
+
+      final timestamp = _syncTimestamp(map['timestamp'] ?? map['sentDateTime']);
+      final groupId = '${map['groupId'] ?? ''}'.trim();
+      final sender = '${map['sender'] ?? map['from'] ?? ''}'.trim();
+      final recipientId = '${map['toUser'] ?? map['recipient'] ?? ''}'.trim();
+      final direction = map['direction'] ?? 'incoming';
+
+      // resolveChatRoomId prevents self-chats and picks the right peer.
+      final chatId = resolveChatRoomId(
+        groupId: groupId.isNotEmpty ? groupId : null,
+        senderId: sender.isNotEmpty ? sender : null,
+        recipientId: groupId.isNotEmpty ? null : (recipientId.isNotEmpty ? recipientId : null),
+        currentUserId: currentUserId,
+      );
+      if (chatId == null) continue;
+
+      out.add(ChatMessage.fromJson(<String, dynamic>{
+        ...map,
+        'id': id,
+        'messageId': '${map['messageId'] ?? id}',
+        'chatId': chatId,
+        'sender': sender,
+        'body': '${map['body'] ?? map['message'] ?? map['content'] ?? ''}',
+        'timestamp': timestamp,
+        if (map['pts'] != null) 'pts': _syncInt(map['pts']),
+        'direction': direction,
+        'deliveryStatus': map['deliveryStatus'] ?? map['status'] ?? 'delivered',
+      }));
+    }
+    return <String, dynamic>{'unread': unread, 'messages': out};
   }
 
   static int _syncInt(dynamic value) =>

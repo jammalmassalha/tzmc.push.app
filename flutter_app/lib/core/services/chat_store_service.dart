@@ -829,6 +829,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     if (_initialSyncInFlight) return;
     _initialSyncInFlight = true;
     state = state.copyWith(isInitialSyncing: true);
+    // Let the loading banner paint before any sync work starts, so the
+    // spinner animates instead of freezing behind the first heavy step.
+    await Future<void>.delayed(const Duration(milliseconds: 16));
     
     // Check for first load or hard reload and force full sync
     final user = _currentUser;
@@ -877,6 +880,9 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         // rendered from Riverpod state. Apply the same response in memory too;
         // otherwise a fresh install sees an empty list until a later poll even
         // though the database already contains the user's chats.
+        // Yield a frame between the DB write and the in-memory merge so the UI
+        // keeps animating while hydration completes.
+        await Future<void>.delayed(Duration.zero);
         await _applyHydrationMessages(hydrationMessages);
         hydratedFromServer = true;
         final nextCursor = hydration.nextSyncTimestamp;
