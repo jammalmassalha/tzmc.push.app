@@ -315,7 +315,11 @@ function buildFcmMessage(token, parsedPayload, subscription) {
             ? notification.body
             : DEFAULT_NOTIFICATION_BODY;
         message.notification = { title, body };
-        if (typeof notification.image === 'string' && notification.image.trim()) {
+        // FCM rejects the whole message (messaging/invalid-argument) when
+        // notification.imageUrl is not an absolute https URL, which silently
+        // dropped every picture notification. Only attach valid URLs; the
+        // image is still delivered in the data payload for the app itself.
+        if (typeof notification.image === 'string' && /^https:\/\/\S+$/i.test(notification.image.trim())) {
             message.notification.imageUrl = notification.image.trim();
         }
     }

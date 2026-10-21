@@ -1453,8 +1453,19 @@ class PushNotificationService {
     ]);
     if (body.isNotEmpty) return body;
 
-    final hasImage = data['image'] != null || data['imageUrl'] != null;
-    if (hasImage) return 'Sent an image';
+    bool present(Object? v) {
+      final s = v?.toString().trim() ?? '';
+      return s.isNotEmpty && s.toLowerCase() != 'null';
+    }
+
+    if (present(data['image']) ||
+        present(data['imageUrl']) ||
+        present(data['imageURL'])) {
+      return 'תמונה חדשה';
+    }
+    if (present(data['fileUrl']) || present(data['file'])) {
+      return 'קובץ חדש';
+    }
 
     final hasLocation = data['location'] != null ||
         data['locationText'] != null ||

@@ -217,6 +217,8 @@ export class NotificationService {
     let body = bodyCandidate || (() => {
       const hasImage = Boolean(payloadData.image || payloadData.imageUrl);
       if (hasImage) return 'Sent an image';
+      const hasFile = Boolean(payloadData.fileUrl || payloadData.file);
+      if (hasFile) return 'Sent a file';
       const hasLocation =
         payloadData.location ||
         payloadData.locationText ||
