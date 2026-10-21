@@ -42,7 +42,7 @@ import '../../firebase_options.dart';
 import '../api/chat_api_service.dart';
 import '../database/chat_database.dart';
 import '../models/chat_models.dart'
-    show ChatMessage, DeliveryStatus, MessageDirection;
+    show ChatMessage, Contact, DeliveryStatus, MessageDirection, isSameUser;
 import '../navigation/root_navigator.dart';
 import '../services/chat_store_service.dart';
 
@@ -269,11 +269,8 @@ class PushNotificationService {
         if (launchDetails?.didNotificationLaunchApp == true) {
           final payload = launchDetails?.notificationResponse?.payload;
           if (payload != null && !payload.startsWith('helpdesk:')) {
-            final parts = payload.split(':');
-            if (parts.isNotEmpty) {
-              final chatId = parts[0].trim().toLowerCase();
-              if (chatId.isNotEmpty) _pendingRouteChatId = chatId;
-            }
+            final chatId = _chatIdFromNotificationPayload(payload);
+            if (chatId.isNotEmpty) _pendingRouteChatId = chatId;
           }
         }
       }
@@ -1257,6 +1254,17 @@ class PushNotificationService {
     }
   }
 
+  /// Extracts the chat id from a local-notification payload of the form
+  /// "chatId:messageId". Group ids such as "group:grp_x" contain colons, so the
+  /// message id is whatever follows the LAST colon rather than splitting on the
+  /// first one.
+  static String _chatIdFromNotificationPayload(String payload) {
+    final trimmed = payload.trim();
+    final idx = trimmed.lastIndexOf(':');
+    final chat = idx >= 0 ? trimmed.substring(0, idx) : trimmed;
+    return chat.trim().toLowerCase();
+  }
+
   /// Handle local notification tap (foreground notifications)
   void _onNotificationTapped(NotificationResponse response) {
     final payload = response.payload;
@@ -1269,10 +1277,8 @@ class PushNotificationService {
       return;
     }
 
-    // Format: "chatId:messageId"
-    final parts = payload.split(':');
-    if (parts.isEmpty) return;
-    final chatId = parts[0].trim().toLowerCase();
+    // Format: "chatId:messageId" (chatId may itself contain colons).
+    final chatId = _chatIdFromNotificationPayload(payload);
     if (chatId.isEmpty) return;
 
     debugPrint('[PushNotificationService] Local notification tapped: $chatId');
@@ -1317,21 +1323,32 @@ class PushNotificationService {
   }
 
   static bool _looksGenericNotificationText(String text) {
+    // Keep Unicode letters/digits so Hebrew (and other non-Latin) text is not
+    // mistaken for an empty/generic string.
     final normalized = text
         .trim()
         .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
         .trim();
-    return normalized.isEmpty ||
-        const {
-          'new notification',
-          'new message',
-          'new alert',
-          'work alert',
-          'worker alert',
-          'alert',
-          'message',
-        }.contains(normalized);
+    if (normalized.isEmpty) return true;
+    const generic = {
+      'new notification',
+      'new message',
+      'new alert',
+      'work alert',
+      'worker alert',
+      'alert',
+      'message',
+      'הודעה חדשה',
+      'התראה חדשה',
+      'הודעה',
+      'התראה',
+    };
+    if (generic.contains(normalized)) return true;
+    // Placeholders such as "New message: <sender>" / "הודעה חדשה מאת <sender>".
+    return normalized.startsWith('new message ') ||
+        normalized.startsWith('new notification ') ||
+        normalized.startsWith('הודעה חדשה ');
   }
 
   static String _firstMeaningfulText(Iterable<Object?> values) {
@@ -1357,25 +1374,104 @@ class PushNotificationService {
     return title.isNotEmpty ? title : 'Work Alert';
   }
 
+  /// Strips role/department metadata: "name (dept)" -> "name".
+  static String _stripParenMetadata(String value) {
+    final idx = value.indexOf('(');
+    return (idx >= 0 ? value.substring(0, idx) : value).trim();
+  }
+
+  /// Resolves the title from the local Drift store: the group name for group
+  /// chats, otherwise the cleaned contact name for the sender. Keeps [fallback]
+  /// (e.g. the raw phone number) when nothing is found locally.
+  Future<String> _resolveLocalTitle(
+    Map<String, dynamic> data,
+    String fallback,
+  ) async {
+    try {
+      final groupId = (data['groupId'] ?? '').toString().trim();
+      final isGroup = data['isGroup'] == true ||
+          data['isGroup']?.toString() == 'true' ||
+          groupId.isNotEmpty;
+      final database = ChatDatabase();
+      if (isGroup) {
+        if (groupId.isEmpty) return fallback;
+        final group = await database.getGroup(groupId);
+        final name = group?.name.trim() ?? '';
+        return name.isNotEmpty ? name : fallback;
+      }
+      final sender = (data['sender'] ?? data['user'] ?? data['chatId'] ?? '')
+          .toString()
+          .trim();
+      if (sender.isEmpty) return fallback;
+      final digits = (String v) => v.replaceAll(RegExp(r'[\s+\-()]'), '');
+      final titleIsSender = fallback.isEmpty ||
+          _looksGenericNotificationText(fallback) ||
+          digits(fallback) == digits(sender);
+      if (!titleIsSender) return fallback;
+      final senderDigits = digits(sender);
+      String nameOf(Contact? c) => _stripParenMetadata(c?.displayName ?? '');
+      Contact? matchIn(Iterable<Contact> list) {
+        for (final c in list) {
+          if (c.username.trim().toLowerCase() == sender.toLowerCase() ||
+              (senderDigits.isNotEmpty && digits(c.username) == senderDigits)) {
+            return c;
+          }
+        }
+        return null;
+      }
+
+      var name = nameOf(await database.getContact(sender));
+      if (name.isEmpty) name = nameOf(matchIn(await database.getAllContacts()));
+      if (name.isNotEmpty) return name;
+
+      // Not cached locally: fetch contacts from the server and cache them.
+      try {
+        final remote = await _api
+            .getContacts()
+            .timeout(const Duration(seconds: 6));
+        final match = matchIn(remote);
+        name = nameOf(match);
+        if (match != null && name.isNotEmpty) {
+          unawaited(database.upsertContact(match).catchError((_) {}));
+          return name;
+        }
+      } catch (_) {}
+      return fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
   static String _resolveNotificationBody(Map<String, dynamic> data, RemoteNotification? notification) {
     final body = _firstMeaningfulText([
-      notification?.body,
       data['body'],
+      data['messageText'],
       data['shortText'],
       data['longText'],
-      data['messageText'],
       data['groupMessageText'],
+      data['text'],
+      notification?.body,
       data['locationText'],
       data['locationName'],
       data['address'],
       data['placeName'],
       data['caption'],
-      data['text'],
     ]);
     if (body.isNotEmpty) return body;
 
-    final hasImage = data['image'] != null || data['imageUrl'] != null;
-    if (hasImage) return 'Sent an image';
+    bool present(Object? v) {
+      final s = v?.toString().trim() ?? '';
+      return s.isNotEmpty && s.toLowerCase() != 'null';
+    }
+
+    if (present(data['image']) ||
+        present(data['imageUrl']) ||
+        present(data['imageURL'])) {
+      return 'תמונה חדשה';
+    }
+    if (present(data['fileUrl']) || present(data['file'])) {
+      return 'קובץ חדש';
+    }
 
     final hasLocation = data['location'] != null ||
         data['locationText'] != null ||
@@ -1388,7 +1484,7 @@ class PushNotificationService {
         data['longitude'] != null;
     if (hasLocation) return 'Location shared';
 
-    return '';
+    return 'הודעה חדשה';
   }
 
   /// Show local notification for foreground messages
@@ -1452,7 +1548,10 @@ class PushNotificationService {
     // so the tap handler can distinguish them from regular chat notifications.
     final data = message.data;
     final type = (data['type'] ?? '').toString().trim().toLowerCase();
-    final displayTitle = _resolveNotificationTitle(data, notification);
+    final displayTitle = await _resolveLocalTitle(
+      data,
+      _resolveNotificationTitle(data, notification),
+    );
     final displayBody = _resolveNotificationBody(data, notification);
     final String notificationPayload;
     if (type == 'helpdesk_assigned' || type == 'helpdesk') {
@@ -1461,7 +1560,11 @@ class PushNotificationService {
     } else {
       // Fall back to sender when chatId/groupId are absent (e.g. helpdesk_ticket messages
       // sent under 'מוקד איחוד' use the senderuser as the chatId).
-      final chatId = data['chatId'] ?? data['groupId'] ?? data['sender'] ?? '';
+      final chatId = _chatIdFromMessage(message) ??
+          data['chatId'] ??
+          data['groupId'] ??
+          data['sender'] ??
+          '';
       final messageId = data['messageId'] ?? '';
       notificationPayload = '$chatId:$messageId';
     }
@@ -1503,8 +1606,7 @@ class PushNotificationService {
           return messageText;
         } else {
           // For direct messages, use the resolved content first.
-          if (displayBody.isNotEmpty) return displayBody;
-          return '';
+          return displayBody;
         }
       })(),
       details,
@@ -1568,19 +1670,55 @@ class PushNotificationService {
     _openChatScreen(chatId);
   }
 
+  /// Resolves the chat to open for a notification payload. Groups use the
+  /// group id; direct chats resolve to the OTHER participant, because the
+  /// server's `chatId` for a direct message is the recipient (this device's
+  /// user), which would otherwise open a self-chat.
   String? _chatIdFromMessage(RemoteMessage message) {
     final data = message.data;
-    final chatId = (data['chatId'] ?? data['groupId'] ?? data['sender'])
-        ?.toString()
-        .trim();
-    if (chatId == null || chatId.isEmpty) {
+    String pick(List<String> keys) {
+      for (final k in keys) {
+        final v = data[k]?.toString().trim() ?? '';
+        if (v.isNotEmpty && v.toLowerCase() != 'null') return v;
+      }
+      return '';
+    }
+
+    final groupId = pick(['groupId', 'group_id']);
+    if (groupId.isNotEmpty) return groupId.toLowerCase();
+
+    final me = _ref.read(currentUserProvider)?.toString() ?? '';
+    final candidates = <String>[
+      pick(['chatId', 'chat_id']),
+      pick(['sender', 'user', 'from', 'fromUser']),
+    ];
+    for (final c in candidates) {
+      if (c.isEmpty) continue;
+      if (me.isNotEmpty && isSameUser(c, me)) continue;
+      return c.toLowerCase();
+    }
+    // Everything resolved to the current user (or nothing): last resort so
+    // the tap is not silently dropped.
+    final fallback = candidates.firstWhere((c) => c.isNotEmpty, orElse: () => '');
+    if (fallback.isEmpty) {
       debugPrint(
         '[PUSH-ROUTING] ❌ No chat/group/sender ID in payload. Keys: ${data.keys.toList()}',
       );
       return null;
     }
-    debugPrint('[PUSH-ROUTING] 📛 Found ID: $chatId (source: ${data.containsKey('chatId') ? 'chatId' : data.containsKey('groupId') ? 'groupId' : 'sender'})');
-    return chatId.toLowerCase();
+    return fallback.toLowerCase();
+  }
+
+  int _routeRetryAttempts = 0;
+
+  /// Retries a deferred route (navigator / auth / chat store not ready yet)
+  /// a bounded number of times so a tap is never silently dropped.
+  void _scheduleRouteRetry() {
+    if (_pendingRouteChatId == null || _routeRetryAttempts >= 40) return;
+    _routeRetryAttempts++;
+    Timer(const Duration(milliseconds: 500), () {
+      if (_pendingRouteChatId != null) unawaited(completeLaunchRouting());
+    });
   }
 
   /// Replays a terminated-state route after authentication and the initial
@@ -1595,6 +1733,7 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] Launch route deferred: user is not authenticated',
         );
+        _scheduleRouteRetry();
         return;
       }
       // The push service and chat shell initialize independently. Do not invoke
@@ -1603,6 +1742,7 @@ class PushNotificationService {
         debugPrint(
           '[PUSH-ROUTING] Launch route deferred: chat store is not ready',
         );
+        _scheduleRouteRetry();
         return;
       }
       await WidgetsBinding.instance.endOfFrame;
@@ -1612,6 +1752,7 @@ class PushNotificationService {
       debugPrint('[PUSH-ROUTING] Replaying pending chat route: $chatId');
       if (_openChatScreen(chatId)) {
         _pendingRouteChatId = null;
+        _routeRetryAttempts = 0;
       } else {
         // The navigator can still be mounting while authentication and store
         // hydration complete. Try once more on the next frame.
@@ -1649,6 +1790,7 @@ class PushNotificationService {
         '[PUSH-ROUTING] ⏱️ App not fully ready, deferring route to $normalizedChatId',
       );
       _pendingRouteChatId = normalizedChatId;
+      _scheduleRouteRetry();
       return false;
     }
 

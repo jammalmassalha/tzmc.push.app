@@ -606,6 +606,45 @@ class ChatDatabase extends _$ChatDatabase {
     });
   }
 
+  /// Re-keys phantom self-chat rows: non-group messages from another sender
+  /// that were filed under the current user's own id are moved to the sender's
+  /// chat. Own messages filed under [me] have no recoverable partner and are
+  /// removed.
+  Future<void> repairSelfChatMessages(String me) async {
+    if (userIdentityKey(me).isEmpty) return;
+    // Any chat id that is really the current user (in any phone format).
+    final rows = await customSelect(
+      "SELECT DISTINCT chat_id FROM messages "
+      "WHERE group_id IS NULL OR TRIM(group_id) = ''",
+    ).get();
+    final selfIds = rows
+        .map((r) => r.read<String>('chat_id'))
+        .where((id) => isSameUser(id, me))
+        .toList();
+    for (final id in selfIds) {
+      final senders = await customSelect(
+        "SELECT DISTINCT sender FROM messages WHERE chat_id = ? "
+        "AND (group_id IS NULL OR TRIM(group_id) = '')",
+        variables: [Variable<String>(id)],
+      ).get();
+      for (final s in senders) {
+        final sender = s.read<String>('sender');
+        if (sender.trim().isEmpty || isSameUser(sender, me)) continue;
+        await customStatement(
+          "UPDATE messages SET chat_id = ? WHERE chat_id = ? AND sender = ? "
+          "AND (group_id IS NULL OR TRIM(group_id) = '')",
+          [normalizeChatId(sender), id, sender],
+        );
+      }
+      // Own messages under own id have no recoverable partner.
+      await customStatement(
+        "DELETE FROM messages WHERE chat_id = ? "
+        "AND (group_id IS NULL OR TRIM(group_id) = '')",
+        [id],
+      );
+    }
+  }
+
   Future<void> deleteMessage(String id) async {
     await (delete(messages)..where((t) => t.id.equals(id))).go();
   }

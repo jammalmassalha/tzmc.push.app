@@ -43,27 +43,46 @@ String? resolveChatRoomId({
   }
 
   // Self-chat protection: if sender == recipient == current user, skip
-  if (senderNorm == recipientNorm && senderNorm == currentNorm) {
+  if (isSameUser(senderNorm, recipientNorm) && isSameUser(senderNorm, currentNorm)) {
     return null;
   }
 
   // Determine chat room based on message direction:
   // If I sent the message (sender == currentUser), the chat room is with the recipient
-  if (senderNorm == currentNorm) {
-    return recipientNorm;
+  if (isSameUser(senderNorm, currentNorm)) {
+    return isSameUser(recipientNorm, currentNorm) ? null : recipientNorm;
   }
 
   // If I received the message (recipient == currentUser), the chat room is with the sender
-  if (recipientNorm == currentNorm) {
+  if (isSameUser(recipientNorm, currentNorm)) {
     return senderNorm;
   }
 
   // This shouldn't happen in normal operation (message not from/to current user)
   // but we prevent self-chats as a last resort
-  return senderNorm == currentNorm ? null : senderNorm;
+  return isSameUser(senderNorm, currentNorm) ? null : senderNorm;
 }
 
 String normalizeChatId(String chatId) => chatId.trim().toLowerCase();
+
+/// Format-tolerant identity key for a user id / phone number, so `+972501234567`,
+/// `972501234567` and `0501234567` compare equal. Non-numeric ids (group ids,
+/// usernames) fall back to the lowercased, trimmed value.
+String userIdentityKey(String? value) {
+  final raw = (value ?? '').trim().toLowerCase();
+  if (raw.isEmpty) return '';
+  final digits = raw.replaceAll(RegExp(r'\D'), '');
+  if (digits.length >= 7 && RegExp(r'^[\d\s+\-().]+$').hasMatch(raw)) {
+    return digits.length > 9 ? digits.substring(digits.length - 9) : digits;
+  }
+  return raw;
+}
+
+/// True when [a] and [b] identify the same user.
+bool isSameUser(String? a, String? b) {
+  final ka = userIdentityKey(a);
+  return ka.isNotEmpty && ka == userIdentityKey(b);
+}
 
 /// Group type enumeration
 enum GroupType { group, community }
@@ -140,7 +159,13 @@ class Contact extends Equatable {
   factory Contact.fromJson(Map<String, dynamic> json) {
     final fullName = (json['fullName'] ?? json['full_name'] ?? '').toString().trim();
     final displayNameRaw = (json['displayName'] ?? '').toString().trim();
-    final name = _parseNameAndInfo(fullName.isNotEmpty ? fullName : displayNameRaw);
+    final exceptionName =
+        (json['exceptionName'] ?? json['ExeptionName'] ?? '').toString().trim();
+    final name = _parseNameAndInfo(
+      fullName.isNotEmpty
+          ? fullName
+          : (displayNameRaw.isNotEmpty ? displayNameRaw : exceptionName),
+    );
 
     int? status;
     final statusVal = json['status'] ?? json['accessStatus'] ?? json['userStatus'];

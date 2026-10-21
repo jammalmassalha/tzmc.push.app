@@ -2454,12 +2454,16 @@ async function resolveContactDisplayName(user) {
     const key = String(user || '').trim();
     if (!key) return '';
     try {
+        if (typeof mysqlLogsService.getSubscribeNameByUser === 'function') {
+            const direct = await mysqlLogsService.getSubscribeNameByUser(key);
+            if (direct) return direct;
+        }
         if (Date.now() - contactNameCache.at > 5 * 60 * 1000) {
             const contacts = await mysqlLogsService.getContacts();
             const map = new Map();
             for (const c of contacts || []) {
-                // Name priority: ExeptionName first, then FullName.
-                const name = cleanDisplayName(c.exceptionName) || cleanDisplayName(c.fullName);
+                // Name priority: FullName first, then ExeptionName.
+                const name = cleanDisplayName(c.fullName) || cleanDisplayName(c.exceptionName);
                 if (c.username && name) map.set(String(c.username).trim(), name);
             }
             contactNameCache = { at: Date.now(), map };
@@ -2863,7 +2867,7 @@ async function processReplyPayload(rawPayload = {}, resolvedUser = '') {
         if (!isGroup && (!resolvedSenderName || resolvedSenderName.replace(/[\s+\-()]/g, '') === String(user).replace(/[\s+\-()]/g, ''))) {
             resolvedSenderName = (await resolveContactDisplayName(user)) || resolvedSenderName;
         }
-        // Group sender: prefer Subscribe (ExeptionName, then FullName) so the
+        // Group sender: prefer Subscribe (FullName, then ExeptionName) so the
         // subtitle names the individual sender; fall back to client-supplied labels.
         if (isGroup && !resolvedSenderName) {
             resolvedSenderName = await resolveContactDisplayName(user);
@@ -6829,13 +6833,16 @@ registerFlutterPushRoutes(app, {
 
 async function sendPushNotificationToUser(targetUser, message, senderuser, options) {
     // Safety net: never show a raw phone number as the title when the sender
-    // has a name in Subscribe (ExeptionName, then FullName, cleaned).
+    // has a name in Subscribe (FullName, then ExeptionName, cleaned).
     try {
         if (message && typeof message === 'object' && senderuser) {
+            const md = (message.data && typeof message.data === 'object') ? message.data : {};
+            const isGroupMsg = md.isGroup === true || md.isGroup === 'true' || Boolean(md.groupId) ||
+                Boolean(options && (options.groupId || options.isGroup === true || options.isGroup === 'true'));
             const title = String(message.title || '').trim();
             const digits = title.replace(/[\s+\-()]/g, '');
-            const senderDigits = String(senderuser).replace(/[\s+\-()]/g, '');
-            if (title && /^\d{7,}$/.test(digits) && digits === senderDigits) {
+            const looksLikePhone = /^\d{7,}$/.test(digits);
+            if (!isGroupMsg && (!title || looksLikePhone)) {
                 const friendly = await resolveContactDisplayName(senderuser);
                 if (friendly) message = { ...message, title: friendly };
             }
