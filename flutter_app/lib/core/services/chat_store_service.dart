@@ -34,6 +34,14 @@ const int gapAnalysisCooldownMs = 30000;
 /// Max messages to keep per chat
 const int maxMessagesPerChat = 500;
 
+/// Payloads larger than this are parsed in a background isolate.
+const int _kOffThreadParseThreshold = 50;
+
+List<IncomingServerMessage> _parseIncomingMessagesSync(List<dynamic> raw) => raw
+    .whereType<Map>()
+    .map((m) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(m)))
+    .toList();
+
 /// Message types that must be treated as actions instead of regular bubbles
 /// when importing server history during sync.
 const Set<String> _kImportedActionTypes = {
@@ -683,13 +691,23 @@ class ChatStoreNotifier extends Notifier<ChatState> {
 
   }
 
+  /// Parses raw sync JSON into models. Large payloads (full sync / deltas) are
+  /// decoded in a background isolate so the UI thread never skips frames; the
+  /// caller only emits state after the result is back. (On web `compute` runs
+  /// inline, which is still correct.)
+  Future<List<IncomingServerMessage>> _parseIncomingOffThread(List<dynamic> raw) async {
+    if (raw.length < _kOffThreadParseThreshold) return _parseIncomingMessagesSync(raw);
+    try {
+      return await compute(_parseIncomingMessagesSync, raw);
+    } catch (_) {
+      return _parseIncomingMessagesSync(raw);
+    }
+  }
+
   Future<void> _applyHydrationMessages(List<dynamic> rawMessages) async {
     if (rawMessages.isEmpty) return;
 
-    final importedMessages = rawMessages
-        .whereType<Map>()
-        .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-        .toList();
+    final importedMessages = await _parseIncomingOffThread(rawMessages);
     await _applyImportedMessages(importedMessages);
   }
 
@@ -1594,10 +1612,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           debugPrint('[PULL] DB syncOneToOne failed: $dbError');
         }
 
-        final normalizedMessages = newMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        final normalizedMessages = await _parseIncomingOffThread(newMessages);
 
         if (needsFullSync) {
           await _applyImportedMessages(normalizedMessages);
@@ -1751,10 +1766,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
             debugPrint('[GAP-RECOVERY] DB sync failed: $e');
           }
 
-          final normalized = messages
-              .whereType<Map>()
-              .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-              .toList();
+          final normalized = await _parseIncomingOffThread(messages);
 
           if (normalized.isNotEmpty) {
             await _applyImportedMessages(normalized);
@@ -1883,10 +1895,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
         syncedChats = chatSync.chats;
         final syncedMessages = chatSync.messages;
         rawSyncedMessages = syncedMessages;
-        normalizedSyncedMessages = syncedMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        normalizedSyncedMessages = await _parseIncomingOffThread(syncedMessages);
 
         if (chatSync.nextSyncTimestamp > _syncCursorMs) {
           _syncCursorMs = chatSync.nextSyncTimestamp;
@@ -4291,10 +4300,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
           debugPrint('[RECONNECT-SYNC] DB syncOneToOne failed: $dbError');
         }
 
-        final normalized = newMessages
-            .whereType<Map>()
-            .map((raw) => IncomingServerMessage.fromJson(Map<String, dynamic>.from(raw)))
-            .toList();
+        final normalized = await _parseIncomingOffThread(newMessages);
 
         for (final message in normalized) {
           _handleServerMessage(_normalizeLogMessageForImport(message));
