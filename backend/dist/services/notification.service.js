@@ -38,7 +38,7 @@ class NotificationService {
     isGenericNotificationText(value) {
         const normalized = this.normalizePushText(value)
             .toLowerCase()
-            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/[^\p{L}\p{N}]+/gu, ' ')
             .trim();
         return !normalized || new Set([
             'new notification',
@@ -47,7 +47,9 @@ class NotificationService {
             'work alert',
             'worker alert',
             'alert',
-            'message'
+            'message',
+            'הודעה חדשה',
+            'התראה חדשה'
         ]).has(normalized);
     }
     firstMeaningfulPushText(values) {

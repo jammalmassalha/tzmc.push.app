@@ -518,12 +518,12 @@ class ChatStoreNotifier extends Notifier<ChatState> {
   String _canonicalChatId(ChatMessage message) {
     final id = normalizeChatId(message.chatId);
     final me = _currentUser?.trim().toLowerCase() ?? '';
-    if (me.isEmpty || id != me) return id;
+    if (me.isEmpty || !isSameUser(id, me)) return id;
     if ((message.groupId ?? '').trim().isNotEmpty || state.groups.containsKey(id)) {
       return id;
     }
     final sender = normalizeChatId(message.sender);
-    return (sender.isNotEmpty && sender != me) ? sender : id;
+    return (sender.isNotEmpty && !isSameUser(sender, me)) ? sender : id;
   }
 
   Map<String, List<ChatMessage>> _normalizeMessagesByChatMap(
@@ -2780,7 +2780,7 @@ class ChatStoreNotifier extends Notifier<ChatState> {
     // that field equals me's phone and would produce a self-chat chatId.
     final meNorm = _currentUser?.trim().toLowerCase() ?? '';
     final senderNorm = sender.trim().toLowerCase();
-    final isSelfEcho = meNorm.isNotEmpty && senderNorm == meNorm;
+    final isSelfEcho = meNorm.isNotEmpty && isSameUser(senderNorm, meNorm);
     final payloadChatId = str(data['chatId'])?.toLowerCase();
     final toUserNorm = (str(data['toUser']) ?? '').trim().toLowerCase();
     // The server's `chatId` for a direct message is the RECIPIENT's id, which
@@ -2794,16 +2794,16 @@ class ChatStoreNotifier extends Notifier<ChatState> {
       // that is not me). Never fall back to recipient.
       final candidate = toUserNorm.isNotEmpty
           ? toUserNorm
-          : ((payloadChatId != null && payloadChatId != meNorm) ? payloadChatId : '');
+          : ((payloadChatId != null && !isSameUser(payloadChatId, meNorm)) ? payloadChatId : '');
       // Discard if there is no deterministic chat partner (old self-echo DB
       // log entries where ToUser == sender).
-      if (candidate.isEmpty || candidate == meNorm || candidate == senderNorm) return;
+      if (candidate.isEmpty || isSameUser(candidate, meNorm) || isSameUser(candidate, senderNorm)) return;
       chatId = candidate;
-    } else if (meNorm.isNotEmpty && senderNorm == meNorm) {
+    } else if (meNorm.isNotEmpty && isSameUser(senderNorm, meNorm)) {
       final candidate = toUserNorm.isNotEmpty
           ? toUserNorm
-          : ((payloadChatId != null && payloadChatId != meNorm) ? payloadChatId : '');
-      if (candidate.isEmpty || candidate == meNorm) {
+          : ((payloadChatId != null && !isSameUser(payloadChatId, meNorm)) ? payloadChatId : '');
+      if (candidate.isEmpty || isSameUser(candidate, meNorm)) {
         debugPrint('[CHAT] ⚠️ Skipping self-echo without deterministic toUser: sender=$senderNorm');
         return;
       }
